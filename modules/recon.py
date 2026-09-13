@@ -56,7 +56,7 @@ class ReconModule:
         return results
 
     def scan_i2p(self, target):
-        results = {'type': 'i2p',, 'target': target, 'services': []}
+        results = {'type': 'i2p',,, 'target': target, 'services': []}
         try:
             from core import I2PRouter
             router = I2PRouter()
@@ -102,7 +102,8 @@ class ReconModule:
         results = {'type': 'cloud', 'target': target, 'assets': []}
         try:
             cloud_domains = [
-                target + '.aws
+                target + '.aw
+s
 .amazon.com',
                 target + '.azurewebsites.net',
                 target + '.cloud.google.com',
