@@ -1,84 +1,44 @@
 framework:
   name: ShadowVoid
-  version: 1.0.0-alpha
-  author: ShadowVoid
-  memory_resident: true
-  polymorphic: true
+  version: 1.0.0-safe
+  safe_mode: true
   debug: false
 
+# Network, persistence, stealth, and destructive operations are disabled.
 stealth:
-  process_name: svchost
-  hide_from_ps: true
-  scrub_history: true
-  clear_screen: true
-  anti_debug: true
-  anti_sandbox: true
-  timestomping: true
+  process_name: null
+  hide_from_ps: false
+  scrub_history: false
+  clear_screen: false
+  anti_debug: false
+  anti_sandbox: false
+  timestomping: false
 
 c2:
-  enabled: true
+  enabled: false
   dga:
-    enabled: true
-    domains_per_day: 1000
-    tlds:
-      - com
-      - net
-      - org
-      - io
-      - xyz
+    enabled: false
+    domains_per_day: 0
+    tlds: []
   routing:
-    tor: true
-    i2p: true
-    socks5: 127.0.0.1:9050
-  dead_drops:
-    twitter: true
-    pastebin: true
-    github: true
-    discord: true
+    tor: false
+    i2p: false
+    socks5: ""
   heartbeat:
     interval: 300
-    jitter: 60
-    kill_switch: 7200
+    jitter: 0
+    kill_switch: 0
 
 modules:
-  recon:
-    enabled: true
-    path: modules/recon.py
-  exploit:
-    enabled: true
-    path: modules/exploit.py
-  auth:
-    enabled: true
-    path: modules/auth.py
-  wireless:
-    enabled: true
-    path: modules/wireless.py
-  net:
-    enabled: true
-    path: modules/net.py
-  web:
-    enabled: true
-    path: modules/web.py
-  onion:
-    enabled: true
-    path: modules/onion.py
-  post_exploit:
-    enabled: true
-    path: modules/post_exploit.py
-
-exfiltration:
-  compression: zstd
-  encryption: true
-  channels:
-    dns: true
-    icmp: true
-    http: true
-    https: true
-  max_chunk_size: 1024
+  recon: {enabled: true, path: modules/recon.py}
+  exploit: {enabled: true, path: modules/exploit.py}
+  auth: {enabled: true, path: modules/auth.py}
+  wireless: {enabled: true, path: modules/wireless.py}
+  net: {enabled: true, path: modules/net.py}
+  web: {enabled: true, path: modules/web.py}
+  onion: {enabled: true, path: modules/onion.py}
+  post_exploit: {enabled: true, path: modules/post_exploit.py}
+  process_injection: {enabled: true, path: modules/process_injection.py}
 
 logging:
   enabled: true
-  encrypted: true
-  location: /tmp/.sv_logs
-  rotation: 24
-  purge_after: 72

