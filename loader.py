@@ -79,8 +79,7 @@ def decrypt_payload(encrypted_data, key):
         from Crypto.Cipher import AES
         nonce = encrypted_data[:12]
         tag = encrypted_data[12:28]
-     
-   ciphertext = encrypted_data[28:]
+        ciphertext = encrypted_data[28:]
         cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
         return cipher.decrypt_and_verify(ciphertext, tag)
     except:
@@ -146,3 +145,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
