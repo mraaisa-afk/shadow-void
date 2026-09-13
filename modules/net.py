@@ -62,8 +62,7 @@ class NetModule:
 
     def vpn_penetrate(self, vpn_ip, target_ip, port=22):
         result = {
-            '
-status': 'starting',
+            'status': 'starting',
             'vpn': vpn_ip,
             'target': target_ip,
             'port': port,
@@ -89,3 +88,4 @@ status': 'starting',
             result['status'] = 'error'
             result['error'] = str(e)
         return result
+
