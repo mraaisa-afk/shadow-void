@@ -58,7 +58,8 @@ class WebModule:
             ]
             for test_url in test_urls:
                 try:
-                    response = subprocess.check_output(['curl', '-s', '-I', test_url],
+     
+               response = subprocess.check_output(['curl', '-s', '-I', test_url],
                                                      stderr=subprocess.DEVNULL, timeout=10).decode()
                     if '200' in response:
                         result['status'] = 'vulnerable'
@@ -106,7 +107,7 @@ class WebModule:
         }
         try:
             cms_signatures = {
-                'WordPress': ['/wp-includes/', '/wp-content/', '/wp-login.php'],
+                'WordPress': [''/wp-includes/', '/wp-content/', '/wp-login.php'],
                 'Joomla': ['/administrator/', '/media/system/js/', '/templates/'],
                 'Drupal': ['/misc/drupal.js', '/sites/default/', '/core/']
             }
