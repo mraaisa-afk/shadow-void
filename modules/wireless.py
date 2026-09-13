@@ -77,8 +77,7 @@ class WirelessModule:
             stdout, stderr = process.communicate()
             if process.returncode == 0:
                 result['status'] = 'success'
-                for line in stdout.decode().split('
-'):
+                for line in stdout.decode().split('\n'):
                     if ':' in line:
                         result['devices'].append({'mac': line.split(':')[0].strip()})
         except Exception as e:

