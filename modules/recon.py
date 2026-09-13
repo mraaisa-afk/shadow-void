@@ -104,6 +104,7 @@ class ReconModule:
             cloud_domains = [
                 target + '.a
 w
+
 s
 .amazon.com',
                 target + '.azurewebsites.net',
