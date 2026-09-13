@@ -57,6 +57,7 @@ class OnionModule:
             for directory_url in directories:
                 results['directories'].append({'url': directory_url, 'status': 'scanned'})
             results['status'] = 'success'
+     
         except Exception as e:
             results['status'] = 'error'
             results['error'] = str(e)
