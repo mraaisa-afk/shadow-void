@@ -102,8 +102,7 @@ class AuthModule:
             ssh_cmd.extend([username + '@' + target, 'cat ~/.ssh/id_rsa; cat ~/.ssh/id_rsa.pub'])
             output = subprocess.check_output(ssh_cmd, stderr=subprocess.DEVNULL, timeout=30)
             result['status'] = 'success'
-            result['keys'] = output.decode().split('
-')
+            result['keys'] = output.decode().split('\n')
         except Exception as e:
             result['status'] = 'error'
             result['error'] = str(e)

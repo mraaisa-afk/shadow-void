@@ -70,10 +70,9 @@ class ReconModule:
         results = {'type': 'arp', 'target': target, 'hosts': []}
         try:
             if platform.system() == 'Linux':
-                output = subprocess.check_output(['arp-scan', '--localnet'], 
+                output = subprocess.check_output(['arp-scan', '--localnet'],
                                               stderr=subprocess.DEVNULL, timeout=30).decode()
-                for line in output.split('
-'):
+                for line in output.split('\n'):
                     if ':' in line and '.' in line:
                         parts = line.split()
                         if len(parts) >= 2:
@@ -92,8 +91,7 @@ class ReconModule:
             if platform.system() == 'Linux':
                 output = subprocess.check_output(['nmblookup', '-A', target],
                                               stderr=subprocess.DEVNULL, timeout=10).decode()
-                for line in output.split('
-'):
+                for line in output.split('\n'):
                     if ':' in line and '.' in line:
                         results['hosts'].append({'info': line.strip()})
         except Exception as e:

