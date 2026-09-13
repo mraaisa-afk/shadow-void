@@ -84,3 +84,4 @@ class WirelessModule:
             result['status'] = 'error'
             result['error'] = str(e)
         return result
+
