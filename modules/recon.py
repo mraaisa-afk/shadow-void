@@ -105,6 +105,7 @@ class ReconModule:
                 target + '.a
 w
 
+
 s
 .amazon.com',
                 target + '.azurewebsites.net',
