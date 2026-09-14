@@ -154,7 +154,8 @@ def make_memory_resident():
                 raise ImportError(f"Module {name} not in memory cache")
 
         memory_loader = MemoryModuleLoader()
-        if memory_loader not in sys.meta_path:
+ 
+       if memory_loader not in sys.meta_path:
             sys.meta_path.insert(0, memory_loader)
         return True
     except Exception as e:
